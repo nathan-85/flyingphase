@@ -1199,23 +1199,5 @@ class TestInputAutoClassification(unittest.TestCase):
         self.assertIn('TAF:', result.stdout)
         self.assertIn('PIREP:', result.stdout)
 
-    def test_multiple_pireps(self):
-        """Multiple PIREP inputs should all be parsed."""
-        import subprocess
-        result = subprocess.run(
-            [sys.executable, str(Path(__file__).parent / 'flyingphase.py'),
-             'OEKF 310600Z 33012KT 9999 FEW080 22/10 Q1018',
-             'UA /OV OEKF /FL050 /SK BKN040CB',
-             'UA /OV OEKF /FL030 /WX BLDU /FV 3SM',
-             '--verbose'],
-            capture_output=True, text=True, timeout=15
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('PIREP:', result.stdout)
-        # Should see elements from both PIREPs
-        self.assertIn('BKN040CB', result.stdout)
-        self.assertIn('BLDU', result.stdout)
-
-
 if __name__ == '__main__':
     unittest.main(verbosity=2)

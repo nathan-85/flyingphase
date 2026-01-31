@@ -2019,7 +2019,7 @@ def main():
     # Auto-classify inputs
     metar_str = None
     taf_str = None
-    pirep_strs = []
+    pirep_str = None
     
     for inp in args.inputs:
         kind = _classify_input(inp)
@@ -2027,8 +2027,8 @@ def main():
             metar_str = inp
         elif kind == 'taf' and taf_str is None:
             taf_str = inp
-        elif kind == 'pirep':
-            pirep_strs.append(inp)
+        elif kind == 'pirep' and pirep_str is None:
+            pirep_str = inp
         elif kind == 'metar' and metar_str is not None:
             # Second METAR-like string — could be TAF without prefix
             if taf_str is None:
@@ -2045,7 +2045,7 @@ def main():
     # Backward compat: set args.metar and args.taf for existing code paths
     args.metar = metar_str
     args.taf = taf_str
-    args.pireps = pirep_strs
+    args.pirep = pirep_str
     
     # Load airfield data
     script_dir = Path(__file__).parent
@@ -2142,8 +2142,8 @@ def main():
         collection.add_all(parse_taf_elements(taf))
     if args.warning:
         collection.add_all(parse_warning_elements(args.warning))
-    for pirep_text in args.pireps:
-        collection.add_all(parse_pirep_elements(pirep_text))
+    if args.pirep:
+        collection.add_all(parse_pirep_elements(args.pirep))
 
     phase_end = _now + timedelta(minutes=args.local_lookahead)
     phase_collection = collection.filter(
