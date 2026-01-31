@@ -1045,13 +1045,13 @@ class TestWarningPhaseImpact(unittest.TestCase):
 class TestWeatherElementPipeline(unittest.TestCase):
     """Test WeatherElement pipeline integration in main flow."""
 
-    def test_pirep_arg_accepted(self):
-        """--pirep should be accepted without error."""
+    def test_pirep_auto_detected(self):
+        """PIREP input should be auto-detected from positional args."""
         import subprocess
         result = subprocess.run(
             [sys.executable, str(Path(__file__).parent / 'flyingphase.py'),
              'OEKF 310600Z 33012KT 9999 FEW080 22/10 Q1018',
-             '--pirep', 'UA /OV OEKF /FL050 /SK BKN040CB /WX TS'],
+             'UA /OV OEKF /FL050 /SK BKN040CB /WX TS'],
             capture_output=True, text=True, timeout=15
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -1073,8 +1073,8 @@ class TestWeatherElementPipeline(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, str(Path(__file__).parent / 'flyingphase.py'),
              'OEKF 310600Z 33012KT 9999 FEW080 22/10 Q1018',
-             '--verbose',
-             '--pirep', 'UA /OV OEKF /FL050 /SK BKN040CB'],
+             'UA /OV OEKF /FL050 /SK BKN040CB',
+             '--verbose'],
             capture_output=True, text=True, timeout=15
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -1089,8 +1089,8 @@ class TestWeatherElementPipeline(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, str(Path(__file__).parent / 'flyingphase.py'),
              'OEKF 310600Z 33012KT 9999 FEW080 22/10 Q1018',
-             '--verbose',
-             '--pirep', 'UA /OV OEKF /FL050 /SK BKN040CB /WX TS'],
+             'UA /OV OEKF /FL050 /SK BKN040CB /WX TS',
+             '--verbose'],
             capture_output=True, text=True, timeout=15
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -1102,8 +1102,8 @@ class TestWeatherElementPipeline(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, str(Path(__file__).parent / 'flyingphase.py'),
              'OEKF 310600Z 33012KT 9999 FEW080 22/10 Q1018',
-             '--verbose',
-             '--warning', 'visibility 2000 or less'],
+             '--warning', 'visibility 2000 or less',
+             '--verbose'],
             capture_output=True, text=True, timeout=15
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -1157,6 +1157,64 @@ class TestWeatherElementPipeline(unittest.TestCase):
                 in_alt_resolved = False
         self.assertIsNotNone(phase_vis, "Phase visibility not found in output")
         self.assertIn('10000m', phase_vis, f"Phase vis should be 10000m (METAR), got: {phase_vis}")
+
+
+class TestInputAutoClassification(unittest.TestCase):
+    """Test auto-classification of METAR / TAF / PIREP inputs."""
+
+    def test_classify_metar(self):
+        from flyingphase import _classify_input
+        self.assertEqual(_classify_input("OEKF 310600Z 33012KT 9999 FEW080 22/10 Q1018"), 'metar')
+
+    def test_classify_taf_with_prefix(self):
+        from flyingphase import _classify_input
+        self.assertEqual(_classify_input("TAF OEKF 310500Z 3106/3124 33015KT 9999 SCT040"), 'taf')
+
+    def test_classify_taf_without_prefix(self):
+        from flyingphase import _classify_input
+        self.assertEqual(_classify_input("OEKF 310500Z 3106/3124 33015KT CAVOK BECMG 3110/3112 5000"), 'taf')
+
+    def test_classify_pirep_ua(self):
+        from flyingphase import _classify_input
+        self.assertEqual(_classify_input("UA /OV OEKF /FL050 /SK BKN040CB /WX TS"), 'pirep')
+
+    def test_classify_pirep_uua(self):
+        from flyingphase import _classify_input
+        self.assertEqual(_classify_input("UUA /OV OEKF /FL030 /SK OVC010 /WX +TSRA"), 'pirep')
+
+    def test_all_three_inputs(self):
+        """METAR + TAF + PIREP as positional args should all be parsed."""
+        import subprocess
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).parent / 'flyingphase.py'),
+             'OEKF 310600Z 33012KT 9999 FEW080 22/10 Q1018',
+             'TAF OEKF 310500Z 3106/3124 33015KT 9999 SCT040 BECMG 3110/3112 5000 BKN020',
+             'UA /OV OEKF /FL050 /SK BKN040CB /WX TS',
+             '--verbose'],
+            capture_output=True, text=True, timeout=15
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # All three sources should appear in pipeline output
+        self.assertIn('METAR:', result.stdout)
+        self.assertIn('TAF:', result.stdout)
+        self.assertIn('PIREP:', result.stdout)
+
+    def test_multiple_pireps(self):
+        """Multiple PIREP inputs should all be parsed."""
+        import subprocess
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).parent / 'flyingphase.py'),
+             'OEKF 310600Z 33012KT 9999 FEW080 22/10 Q1018',
+             'UA /OV OEKF /FL050 /SK BKN040CB',
+             'UA /OV OEKF /FL030 /WX BLDU /FV 3SM',
+             '--verbose'],
+            capture_output=True, text=True, timeout=15
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('PIREP:', result.stdout)
+        # Should see elements from both PIREPs
+        self.assertIn('BKN040CB', result.stdout)
+        self.assertIn('BLDU', result.stdout)
 
 
 if __name__ == '__main__':

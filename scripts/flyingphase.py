@@ -1964,10 +1964,39 @@ def format_output(phase_result: dict, metar: METARParser, runway: str,
     return "\n".join(output)
 
 
+def _classify_input(text: str) -> str:
+    """Auto-classify a weather input string as 'metar', 'taf', or 'pirep'.
+    
+    Detection rules:
+      - Starts with 'UA ' or 'UUA ' or contains '/OV ' + '/SK ' → PIREP
+      - Starts with 'TAF ' or contains 'BECMG ' or 'FM\\d{6}' → TAF
+      - Everything else → METAR
+    """
+    t = text.strip().upper()
+    # PIREP: routine (UA) or urgent (UUA), or has PIREP slash fields
+    if t.startswith('UA ') or t.startswith('UUA ') or t.startswith('UA/'):
+        return 'pirep'
+    if '/OV ' in t and ('/SK ' in t or '/WX ' in t or '/FV ' in t):
+        return 'pirep'
+    # TAF
+    if t.startswith('TAF ') or t.startswith('TAF\n'):
+        return 'taf'
+    if re.search(r'\bBECMG\s+\d{4}/\d{4}', t) or re.search(r'\bFM\d{6}', t):
+        return 'taf'
+    if re.search(r'\bTEMPO\s+\d{4}/\d{4}', t) and not re.search(r'\d{6}Z\s', t):
+        # TEMPO in TAF context (not METAR trend)
+        return 'taf'
+    return 'metar'
+
+
 def main():
-    parser = argparse.ArgumentParser(description='KFAA Flying Phase Determination')
-    parser.add_argument('metar', help='METAR string for OEKF')
-    parser.add_argument('taf', nargs='?', help='TAF string for OEKF (optional)')
+    parser = argparse.ArgumentParser(
+        description='KFAA Flying Phase Determination',
+        epilog='Input strings are auto-classified as METAR, TAF, or PIREP. '
+               'Pass each as a separate positional argument.'
+    )
+    parser.add_argument('inputs', nargs='+',
+                        help='Weather input strings (METAR, TAF, PIREP — auto-detected)')
     parser.add_argument('--rwy', '--runway', dest='runway', help='Runway in use (e.g., 33L)')
     parser.add_argument('--warning', help='Weather warning string')
     parser.add_argument('--notes', nargs='*', help='Operational notes (e.g., "RADAR procedures only" "No medical")')
@@ -1984,9 +2013,39 @@ def main():
                         help='Sortie time in local (AST) HHmm format, e.g. "1030" for 10:30 local')
     parser.add_argument('--local-lookahead', dest='local_lookahead', type=int, default=60,
                         help='OEKF phase lookahead window in minutes (default: 60)')
-    parser.add_argument('--pirep', help='PIREP text input (e.g. "UA /OV OEKF /FL050 /SK BKN040CB /WX TS")')
     
     args = parser.parse_args()
+    
+    # Auto-classify inputs
+    metar_str = None
+    taf_str = None
+    pirep_strs = []
+    
+    for inp in args.inputs:
+        kind = _classify_input(inp)
+        if kind == 'metar' and metar_str is None:
+            metar_str = inp
+        elif kind == 'taf' and taf_str is None:
+            taf_str = inp
+        elif kind == 'pirep':
+            pirep_strs.append(inp)
+        elif kind == 'metar' and metar_str is not None:
+            # Second METAR-like string — could be TAF without prefix
+            if taf_str is None:
+                taf_str = inp
+            else:
+                print(f"Warning: Ignoring extra input: {inp[:50]}...", file=sys.stderr)
+        else:
+            print(f"Warning: Ignoring extra input: {inp[:50]}...", file=sys.stderr)
+    
+    if metar_str is None:
+        print("Error: No METAR input detected. At least one METAR string is required.", file=sys.stderr)
+        sys.exit(1)
+    
+    # Backward compat: set args.metar and args.taf for existing code paths
+    args.metar = metar_str
+    args.taf = taf_str
+    args.pireps = pirep_strs
     
     # Load airfield data
     script_dir = Path(__file__).parent
@@ -2083,8 +2142,8 @@ def main():
         collection.add_all(parse_taf_elements(taf))
     if args.warning:
         collection.add_all(parse_warning_elements(args.warning))
-    if args.pirep:
-        collection.add_all(parse_pirep_elements(args.pirep))
+    for pirep_text in args.pireps:
+        collection.add_all(parse_pirep_elements(pirep_text))
 
     phase_end = _now + timedelta(minutes=args.local_lookahead)
     phase_collection = collection.filter(
