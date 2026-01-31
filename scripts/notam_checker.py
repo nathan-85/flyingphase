@@ -18,7 +18,7 @@ import urllib.request
 import urllib.error
 import urllib.parse
 from typing import Dict, List, Optional, Tuple
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 
 # FAA External API
@@ -87,6 +87,107 @@ HIGH_IMPACT_PATTERNS = [
     (r'\bFIRE\b.*\b(CAT|DOWNGRADE)\b', 'Fire category downgraded'),
     (r'\bBIRD\b', 'Bird activity reported'),
 ]
+
+
+def _parse_notam_time(time_str: str) -> Optional[datetime]:
+    """Parse a NOTAM effective time string to datetime (UTC)."""
+    if not time_str or time_str == 'PERM':
+        return None
+    # Try ISO format: 2026-02-01T00:00:00.000Z
+    for fmt in ('%Y-%m-%dT%H:%M:%S.%fZ', '%Y-%m-%dT%H:%M:%SZ', '%Y-%m-%dT%H:%M:%S'):
+        try:
+            return datetime.strptime(time_str, fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return None
+
+
+def _parse_schedule_window(schedule: str, ref_time: datetime) -> List[Tuple[datetime, datetime]]:
+    """
+    Parse NOTAM schedule field into active windows for the reference day.
+    Examples: '1500-2200', '0300-1500', 'DAILY 0600-1800', 'MON-FRI 0500-1700'
+    Returns list of (start_utc, end_utc) tuples for the reference day.
+    """
+    if not schedule:
+        return []
+
+    windows = []
+    # Extract HHmm-HHmm patterns
+    time_ranges = re.findall(r'(\d{4})-(\d{4})', schedule)
+    if not time_ranges:
+        return []
+
+    ref_date = ref_time.date()
+    for start_hhmm, end_hhmm in time_ranges:
+        try:
+            sh, sm = int(start_hhmm[:2]), int(start_hhmm[2:])
+            eh, em = int(end_hhmm[:2]), int(end_hhmm[2:])
+            start = datetime(ref_date.year, ref_date.month, ref_date.day,
+                           sh, sm, tzinfo=timezone.utc)
+            end = datetime(ref_date.year, ref_date.month, ref_date.day,
+                         eh, em, tzinfo=timezone.utc)
+            # Handle overnight windows (e.g., 2200-0600)
+            if end <= start:
+                end += timedelta(days=1)
+            windows.append((start, end))
+        except (ValueError, IndexError):
+            continue
+
+    return windows
+
+
+def is_notam_active_in_window(notam_data: dict, window_start: datetime,
+                               window_end: datetime) -> bool:
+    """
+    Check if a NOTAM is active (or will be active) within the given time window.
+
+    Logic:
+    1. Parse effectiveStart/effectiveEnd
+    2. NOTAM must overlap with [window_start, window_end]
+    3. If schedule field exists, also check daily schedule windows
+    4. PERM end = no expiry
+    5. Missing start = assume already active
+    """
+    start_str = notam_data.get('start', '')
+    end_str = notam_data.get('end', '')
+    schedule = notam_data.get('schedule', '')
+
+    # Parse effective period
+    eff_start = _parse_notam_time(start_str)
+    eff_end = _parse_notam_time(end_str)
+
+    # If NOTAM hasn't started yet and won't start within window → inactive
+    if eff_start and eff_start > window_end:
+        return False
+
+    # If NOTAM has already ended → inactive
+    if eff_end and eff_end < window_start:
+        return False
+
+    # At this point, the NOTAM's effective period overlaps with our window.
+    # If there's a daily schedule, check if any schedule window overlaps.
+    if schedule:
+        # Check schedule windows for each day in our planning window
+        # Start from previous day to catch overnight windows (e.g., 2200-0600)
+        current_day = window_start.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
+        end_day = window_end.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+
+        has_schedule_overlap = False
+        while current_day <= end_day:
+            sched_windows = _parse_schedule_window(schedule, current_day)
+            for sw_start, sw_end in sched_windows:
+                # Check if schedule window overlaps with our planning window
+                if sw_start < window_end and sw_end > window_start:
+                    has_schedule_overlap = True
+                    break
+            if has_schedule_overlap:
+                break
+            current_day += timedelta(days=1)
+
+        return has_schedule_overlap
+
+    # No schedule restriction — NOTAM is active throughout its effective period
+    return True
 
 
 def _deobfuscate(data: list, key: int) -> str:
@@ -171,6 +272,7 @@ def _parse_notam_from_geojson(feature: dict, default_icao: str) -> dict:
     icao = notam.get('icaoLocation') or notam.get('location') or default_icao
     start = notam.get('effectiveStart', '')
     end = notam.get('effectiveEnd', '')
+    schedule = notam.get('schedule', '')
 
     category, impacts = classify_notam(text)
     affected_rwy = extract_affected_runway(text)
@@ -187,6 +289,7 @@ def _parse_notam_from_geojson(feature: dict, default_icao: str) -> dict:
         'affected_navaid': affected_nav,
         'start': start,
         'end': end,
+        'schedule': schedule,
     }
 
 
@@ -244,9 +347,15 @@ def extract_affected_navaid(notam_text: str) -> Optional[str]:
 
 
 def check_notams_for_alternates(icaos: List[str], timeout: int = 15,
-                                 include_oekf: bool = True) -> dict:
+                                 include_oekf: bool = True,
+                                 window_hours: float = 3.0) -> dict:
     """
     Fetch and analyze NOTAMs for airfields via FAA External API.
+    
+    Time filtering:
+    - OEKF: NOW window (active right now)
+    - Alternates: NOW + window_hours (default 3hr planning window)
+    - NOTAMs outside their effective period or daily schedule are excluded
     """
     all_icaos = list(icaos)
     if include_oekf and 'OEKF' not in all_icaos:
@@ -264,17 +373,34 @@ def check_notams_for_alternates(icaos: List[str], timeout: int = 15,
     items_by_icao = raw.get('items_by_icao', {})
     total = raw.get('total', 0)
 
+    now = datetime.now(timezone.utc)
+    # OEKF window: current + 1hr (sortie planning horizon)
+    oekf_window_end = now + timedelta(hours=min(window_hours, 1.0))
+    # Alternate window: now + planning hours (time to divert)
+    alt_window_end = now + timedelta(hours=window_hours)
+
     # Parse and organize by airfield
     results = {
         'status': 'ok',
         'total_fetched': total,
-        'fetch_time_utc': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+        'fetch_time_utc': now.strftime('%Y-%m-%dT%H:%M:%SZ'),
+        'window_hours': window_hours,
         'airfields': {}
     }
 
     for icao in all_icaos:
         features = items_by_icao.get(icao, [])
-        notams = [_parse_notam_from_geojson(f, icao) for f in features]
+        all_notams = [_parse_notam_from_geojson(f, icao) for f in features]
+
+        # Time-filter: OEKF uses tight window, alternates use planning window
+        if icao == 'OEKF':
+            w_start, w_end = now, oekf_window_end
+        else:
+            w_start, w_end = now, alt_window_end
+
+        notams = [n for n in all_notams if is_notam_active_in_window(n, w_start, w_end)]
+        filtered_count = len(all_notams) - len(notams)
+
         high_impact = [n for n in notams if n['high_impact']]
 
         # Determine overall impact
@@ -286,6 +412,8 @@ def check_notams_for_alternates(icaos: List[str], timeout: int = 15,
 
         results['airfields'][icao] = {
             'total_notams': len(notams),
+            'total_fetched': len(all_notams),
+            'filtered_out': filtered_count,
             'high_impact_count': len(high_impact),
             'notams': notams,
             'summary': {
@@ -322,6 +450,8 @@ def format_notam_report(results: dict) -> str:
     lines.append("📋 NOTAM CHECK (FAA API)")
     lines.append(f"  Fetched: {results.get('total_fetched', 0)} NOTAMs")
     lines.append(f"  Time: {results.get('fetch_time_utc', 'N/A')}")
+    window_hrs = results.get('window_hours', 3.0)
+    lines.append(f"  Window: NOW → +{window_hrs:.0f}hr (alternates)")
     lines.append("-" * 55)
 
     airfields = results.get('airfields', {})
@@ -329,6 +459,7 @@ def format_notam_report(results: dict) -> str:
     for icao, data in airfields.items():
         total = data.get('total_notams', 0)
         hi = data.get('high_impact_count', 0)
+        filtered = data.get('filtered_out', 0)
         summary = data.get('summary', {})
 
         # Status indicator
@@ -339,9 +470,10 @@ def format_notam_report(results: dict) -> str:
         elif total > 0:
             status = f'🟢 {total} active'
         else:
-            status = '⚪ No NOTAMs'
+            status = '⚪ No active NOTAMs'
 
-        lines.append(f"\n  {icao}: {status}")
+        filter_note = f" ({filtered} outside window)" if filtered > 0 else ""
+        lines.append(f"\n  {icao}: {status}{filter_note}")
 
         if summary.get('aerodrome_closed'):
             lines.append(f"    ‼️  AERODROME CLOSED")
@@ -431,10 +563,16 @@ if __name__ == '__main__':
                         help='ICAO codes to check (default: all KFAA alternates)')
     parser.add_argument('--json', action='store_true', help='JSON output')
     parser.add_argument('--timeout', type=int, default=15, help='Fetch timeout seconds')
+    parser.add_argument('--window', type=float, default=3.0,
+                        help='Planning window in hours for alternates (default: 3)')
+    parser.add_argument('--no-filter', action='store_true',
+                        help='Show all NOTAMs regardless of activation time')
 
     args = parser.parse_args()
 
-    results = check_notams_for_alternates(args.icaos, timeout=args.timeout, include_oekf=True)
+    window = 8760 if args.no_filter else args.window  # 8760h = 1 year = effectively no filter
+    results = check_notams_for_alternates(args.icaos, timeout=args.timeout,
+                                          include_oekf=True, window_hours=window)
 
     if args.json:
         print(json.dumps(results, indent=2))

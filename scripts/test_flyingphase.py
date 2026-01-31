@@ -811,6 +811,96 @@ class TestNotamAlternateImpact(unittest.TestCase):
         self.assertFalse(impact['vor_available'])
 
 
+class TestNOTAMTimeFiltering(unittest.TestCase):
+    """Test that NOTAM time windows are respected."""
+
+    def setUp(self):
+        from datetime import datetime, timezone, timedelta
+        from notam_checker import is_notam_active_in_window, _parse_schedule_window
+        self.is_active = is_notam_active_in_window
+        self.parse_schedule = _parse_schedule_window
+        self.dt = datetime
+        self.tz = timezone
+        self.td = timedelta
+        self.now = datetime(2026, 1, 31, 10, 0, 0, tzinfo=timezone.utc)
+
+    def test_active_notam_within_window(self):
+        """NOTAM active now should be included."""
+        notam = {
+            'start': '2026-01-30T00:00:00.000Z',
+            'end': '2026-02-07T23:59:00.000Z',
+            'schedule': '',
+        }
+        self.assertTrue(self.is_active(notam, self.now, self.now + self.td(hours=3)))
+
+    def test_future_notam_outside_window(self):
+        """NOTAM starting tomorrow should be excluded from 3hr window."""
+        notam = {
+            'start': '2026-02-01T00:00:00.000Z',
+            'end': '2026-03-03T23:59:00.000Z',
+            'schedule': '',
+        }
+        self.assertFalse(self.is_active(notam, self.now, self.now + self.td(hours=3)))
+
+    def test_future_notam_within_large_window(self):
+        """NOTAM starting tomorrow should be included in 24hr window."""
+        notam = {
+            'start': '2026-02-01T00:00:00.000Z',
+            'end': '2026-03-03T23:59:00.000Z',
+            'schedule': '',
+        }
+        self.assertTrue(self.is_active(notam, self.now, self.now + self.td(hours=24)))
+
+    def test_expired_notam_excluded(self):
+        """NOTAM that ended yesterday should be excluded."""
+        notam = {
+            'start': '2026-01-25T00:00:00.000Z',
+            'end': '2026-01-30T23:59:00.000Z',
+            'schedule': '',
+        }
+        self.assertFalse(self.is_active(notam, self.now, self.now + self.td(hours=3)))
+
+    def test_perm_notam_always_active(self):
+        """PERM NOTAM with past start should always be active."""
+        notam = {
+            'start': '2025-06-01T00:00:00.000Z',
+            'end': 'PERM',
+            'schedule': '',
+        }
+        self.assertTrue(self.is_active(notam, self.now, self.now + self.td(hours=3)))
+
+    def test_schedule_active_window(self):
+        """NOTAM with schedule active during our window should be included."""
+        notam = {
+            'start': '2026-01-30T00:00:00.000Z',
+            'end': '2026-02-13T03:00:00.000Z',
+            'schedule': '0900-1200',  # 0900-1200Z daily
+        }
+        # Window 1000-1300Z overlaps with 0900-1200Z
+        self.assertTrue(self.is_active(notam, self.now, self.now + self.td(hours=3)))
+
+    def test_schedule_inactive_window(self):
+        """NOTAM with schedule outside our window should be excluded."""
+        notam = {
+            'start': '2026-01-30T00:00:00.000Z',
+            'end': '2026-02-13T03:00:00.000Z',
+            'schedule': '1930-0330',  # Evening schedule
+        }
+        # Window 1000-1300Z does NOT overlap with 1930-0330Z
+        self.assertFalse(self.is_active(notam, self.now, self.now + self.td(hours=3)))
+
+    def test_schedule_overnight_active(self):
+        """Overnight schedule active at check time should be included."""
+        notam = {
+            'start': '2026-01-30T00:00:00.000Z',
+            'end': '2026-02-13T03:00:00.000Z',
+            'schedule': '2200-0600',  # Overnight
+        }
+        # Check at 0200Z — inside overnight window
+        check_time = self.dt(2026, 1, 31, 2, 0, 0, tzinfo=self.tz.utc)
+        self.assertTrue(self.is_active(notam, check_time, check_time + self.td(hours=3)))
+
+
 class TestWarningPhaseImpact(unittest.TestCase):
     """Test that weather warnings affect phase determination."""
 
