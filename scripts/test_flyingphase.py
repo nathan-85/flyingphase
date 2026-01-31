@@ -717,32 +717,7 @@ class TestNotamClassification(unittest.TestCase):
         self.assertTrue(any('Radar unserviceable' in i for i in impacts))
 
 
-class TestNotamCurrentCheck(unittest.TestCase):
-    """Test NOTAM date validity checking."""
-
-    def setUp(self):
-        from notam_checker import is_notam_current
-        self.is_current = is_notam_current
-
-    def test_current_notam(self):
-        """NOTAM with PERM end date is current."""
-        notam = {'startDate': '01/01/2025 0000', 'endDate': 'PERM'}
-        self.assertTrue(self.is_current(notam))
-
-    def test_expired_notam(self):
-        """NOTAM with past end date is not current."""
-        notam = {'startDate': '01/01/2020 0000', 'endDate': '01/01/2021 2359'}
-        self.assertFalse(self.is_current(notam))
-
-    def test_future_notam(self):
-        """NOTAM starting in the future is included (API returns relevant NOTAMs)."""
-        notam = {'startDate': '01/01/2099 0000', 'endDate': '12/31/2099 2359'}
-        self.assertTrue(self.is_current(notam))
-
-    def test_no_dates(self):
-        """NOTAM with no dates treated as current."""
-        notam = {}
-        self.assertTrue(self.is_current(notam))
+    # Note: is_notam_current removed — FAA API handles date filtering
 
 
 class TestNotamAlternateImpact(unittest.TestCase):
