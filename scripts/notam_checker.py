@@ -14,7 +14,6 @@ Usage:
 import json
 import os
 import re
-import subprocess
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -24,6 +23,11 @@ from datetime import datetime, timezone
 
 # FAA External API
 FAA_API_BASE = "https://external-api.faa.gov/notamapi/v1"
+
+# Obfuscated credentials (XOR with key, same scheme as iOS app)
+_XOR_KEY = 0x37
+_OBF_ID = [85, 15, 84, 84, 15, 85, 4, 85, 3, 6, 4, 3, 3, 1, 2, 85, 14, 6, 6, 82, 85, 2, 84, 5, 2, 86, 14, 83, 86, 15, 14, 81]
+_OBF_SECRET = [86, 5, 0, 7, 7, 114, 82, 15, 6, 1, 5, 0, 3, 7, 4, 4, 117, 117, 5, 118, 117, 1, 113, 5, 115, 117, 6, 83, 86, 5, 6, 15]
 
 # NOTAM categories by operational impact
 CATEGORY_PATTERNS = {
@@ -83,24 +87,15 @@ HIGH_IMPACT_PATTERNS = [
 ]
 
 
-def _get_keychain_value(service: str, account: str) -> Optional[str]:
-    """Read a value from macOS Keychain."""
-    try:
-        result = subprocess.run(
-            ['security', 'find-generic-password', '-s', service, '-a', account, '-w'],
-            capture_output=True, text=True, timeout=5
-        )
-        if result.returncode == 0:
-            return result.stdout.strip()
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
-    return None
+def _deobfuscate(data: list, key: int) -> str:
+    """XOR deobfuscate bytes to string."""
+    return ''.join(chr(b ^ key) for b in data)
 
 
 def _get_credentials() -> Tuple[Optional[str], Optional[str]]:
-    """Get FAA API credentials from env vars or macOS Keychain."""
-    client_id = os.environ.get('FAA_CLIENT_ID') or _get_keychain_value('faa-notam-api', 'client_id')
-    client_secret = os.environ.get('FAA_CLIENT_SECRET') or _get_keychain_value('faa-notam-api', 'client_secret')
+    """Get FAA API credentials. Priority: env vars > embedded."""
+    client_id = os.environ.get('FAA_CLIENT_ID') or _deobfuscate(_OBF_ID, _XOR_KEY)
+    client_secret = os.environ.get('FAA_CLIENT_SECRET') or _deobfuscate(_OBF_SECRET, _XOR_KEY)
     return client_id, client_secret
 
 
