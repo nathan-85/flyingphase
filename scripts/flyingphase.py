@@ -568,7 +568,7 @@ def determine_phase(metar: METARParser, runway_heading: int, airfield_data: dict
     
     vfr_checks.append(('Vis ≥ 5km', vis_km and vis_km >= 5))
     vfr_checks.append(('Ceiling ≥ 1500ft', ceiling is None or ceiling >= 1500))
-    vfr_checks.append(('Total wind ≤ 35kt', effective_wind <= 35))
+    vfr_checks.append(('Total wind ≤ 30kt', effective_wind <= 30))
     vfr_checks.append(('Crosswind ≤ 24kt', crosswind <= 24))
     vfr_checks.append(('Tailwind ≤ 10kt', tailwind <= 10))
     
@@ -602,7 +602,7 @@ def determine_phase(metar: METARParser, runway_heading: int, airfield_data: dict
     
     ifr_checks.append((f'Vis ≥ {min_vis_m}m', metar.visibility_m and metar.visibility_m >= min_vis_m))
     ifr_checks.append((f'Ceiling ≥ {min_ceiling_ft}ft', ceiling is None or ceiling >= min_ceiling_ft))
-    ifr_checks.append(('Total wind ≤ 35kt', effective_wind <= 35))
+    ifr_checks.append(('Total wind ≤ 30kt', effective_wind <= 30))
     ifr_checks.append(('Crosswind ≤ 24kt', crosswind <= 24))
     ifr_checks.append(('Tailwind ≤ 10kt', tailwind <= 10))
     
