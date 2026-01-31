@@ -13,6 +13,7 @@ Usage:
 """
 
 import json
+import os
 import re
 import urllib.request
 import urllib.error
@@ -64,6 +65,8 @@ HIGH_IMPACT_PATTERNS = [
     (r'\bVOR\b.*\b(U/S|UNSERVICEABLE|INOP|OUT OF SERVICE|OTS|NOT AVBL)\b', 'VOR unserviceable'),
     (r'\b(U/S|UNSERVICEABLE|INOP|OUT OF SERVICE|OTS|NOT AVBL)\b.*\bVOR\b', 'VOR unserviceable'),
     (r'\bDME\b.*\b(U/S|UNSERVICEABLE|INOP|OUT OF SERVICE|OTS)\b', 'DME unserviceable'),
+    (r'\bTACAN\b.*\b(U/S|UNSERVICEABLE|INOP|OUT OF SERVICE|OTS)\b', 'TACAN unserviceable'),
+    (r'\bNDB\b.*\b(U/S|UNSERVICEABLE|INOP|OUT OF SERVICE|OTS)\b', 'NDB unserviceable'),
     (r'\bRWY\b.*\bCLSD\b', 'Runway closed'),
     (r'\bCLSD\b.*\bRWY\b', 'Runway closed'),
     (r'\bAD\b.*\bCLSD\b', 'Aerodrome closed'),
@@ -283,6 +286,72 @@ def extract_affected_navaid(notam_text: str) -> Optional[str]:
     return None
 
 
+def load_local_notams(icao: str = 'OEKF') -> List[dict]:
+    """
+    Load manually-maintained NOTAMs from local JSON file.
+    Used for military airfields not available via FAA API.
+    
+    File: oekf_notams.json (same directory as this script)
+    """
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    notam_file = os.path.join(script_dir, f'{icao.lower()}_notams.json')
+    
+    if not os.path.exists(notam_file):
+        return []
+    
+    try:
+        with open(notam_file) as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return []
+    
+    now = datetime.now(timezone.utc)
+    from datetime import timedelta
+    lookahead = now + timedelta(hours=24)
+    active = []
+    
+    for notam in data.get('notams', []):
+        # Check date validity — include active + starting within 24h
+        start_str = notam.get('start', '')
+        end_str = notam.get('end', '')
+        upcoming = False
+        
+        try:
+            if start_str:
+                start = datetime.fromisoformat(start_str.replace('Z', '+00:00'))
+                if start > lookahead:
+                    continue  # Too far in the future
+                if start > now:
+                    upcoming = True  # Starts within 24h
+            if end_str and end_str != 'PERM':
+                end = datetime.fromisoformat(end_str.replace('Z', '+00:00'))
+                if end < now:
+                    continue  # Expired
+        except (ValueError, TypeError):
+            pass  # If dates can't be parsed, include the NOTAM
+        
+        text = notam.get('text', '')
+        category, impacts = classify_notam(text)
+        affected_rwy = extract_affected_runway(text)
+        affected_nav = extract_affected_navaid(text)
+        
+        active.append({
+            'number': notam.get('number', 'LOCAL'),
+            'text': text.strip(),
+            'category': category,
+            'impacts': impacts,
+            'high_impact': len(impacts) > 0,
+            'affected_runway': affected_rwy,
+            'affected_navaid': affected_nav,
+            'start': start_str,
+            'end': end_str,
+            'source': 'local',
+            'upcoming': upcoming
+        })
+    
+    return active
+
+
 def check_notams_for_alternates(icaos: List[str], timeout: int = 15,
                                  include_oekf: bool = True) -> dict:
     """
@@ -348,6 +417,12 @@ def check_notams_for_alternates(icaos: List[str], timeout: int = 15,
                 if icao in icao_msg.upper():
                     airfield_notams[icao].append(parsed)
                     break
+    
+    # Merge local NOTAMs (for military airfields not on FAA API)
+    for icao in all_icaos:
+        local = load_local_notams(icao)
+        if local:
+            airfield_notams[icao].extend(local)
     
     # Build per-airfield summary
     results = {
@@ -454,7 +529,13 @@ def format_notam_report(results: dict) -> str:
         for n in high_impact_notams[:5]:  # Cap at 5 per airfield
             impacts_str = '; '.join(n['impacts'])
             num = n.get('number', '?')
-            lines.append(f"    • {num}: {impacts_str}")
+            tags = []
+            if n.get('source') == 'local':
+                tags.append('local')
+            if n.get('upcoming'):
+                tags.append('starts soon')
+            tag_str = f" ({', '.join(tags)})" if tags else ''
+            lines.append(f"    • {num}{tag_str}: {impacts_str}")
             # Show end date for ops awareness
             end = n.get('end', '')
             if end and end != 'PERM':
