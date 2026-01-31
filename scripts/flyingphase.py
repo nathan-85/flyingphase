@@ -15,12 +15,18 @@ Improvements v2:
 import argparse
 import json
 import math
+import os
 import re
 import sys
+import time
 import urllib.request
 import urllib.error
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
+
+# TAF cache configuration
+TAF_CACHE_DIR = "/tmp/flyingphase_taf_cache"
+TAF_CACHE_EXPIRY_SECS = 1800  # 30 minutes
 
 
 class METARParser:
@@ -42,7 +48,30 @@ class METARParser:
         self.qnh = None
         self.cavok = False
         self.rvr = []
+        self.remarks = ""
+        self.cb_details = []  # List of CB observations with distance/direction
+        self.has_ts_weather = False  # TS in weather group
+        self.parse_warnings = []  # Track what couldn't be parsed
         self.parse()
+    
+    def validate(self) -> List[str]:
+        """Check for missing critical fields and return list of issues."""
+        issues = []
+        if not self.icao:
+            issues.append("❌ ICAO code not found — expected 4-letter code (e.g. OEKF)")
+        if self.wind_speed is None:
+            issues.append("❌ Wind group not found — expected format like 33012KT or VRB03KT")
+        if self.visibility_m is None and not self.cavok:
+            issues.append("❌ Visibility not found — expected 4-digit meters (e.g. 9999, 3000) or CAVOK")
+        if not self.clouds and not self.cavok:
+            issues.append("⚠️ No cloud groups found — expected format like FEW040, SCT080, BKN015, OVC003")
+        if self.qnh is None:
+            issues.append("⚠️ QNH not found — expected Q1013 or A2992")
+        if self.temp is None:
+            issues.append("⚠️ Temperature not found — expected format like 22/10 or M02/M05")
+        # Add any parse warnings
+        issues.extend(self.parse_warnings)
+        return issues
     
     def parse(self):
         """Parse METAR string."""
@@ -62,6 +91,10 @@ class METARParser:
         
         # Skip date/time (DDHHmmZ)
         if idx < len(parts) and re.match(r'\d{6}Z', parts[idx]):
+            idx += 1
+        
+        # Skip AUTO or COR if present
+        if idx < len(parts) and parts[idx] in ('AUTO', 'COR'):
             idx += 1
         
         # Wind: 28018G25KT or 28018KT or VRB03KT or 00000KT
@@ -147,6 +180,9 @@ class METARParser:
             
             if is_weather:
                 self.weather.append(parts[idx])
+                # Detect thunderstorm as CB indicator
+                if 'TS' in part_upper:
+                    self.has_ts_weather = True
                 idx += 1
             else:
                 break
@@ -160,6 +196,14 @@ class METARParser:
             # Check for special cloud codes
             if part in special_cloud_codes:
                 # These mean no significant cloud
+                idx += 1
+                continue
+            
+            # Standalone CB or TCU (e.g., "+TSRA CB BKN010CB")
+            # Skip it but note as weather indicator
+            if part in ('CB', 'TCU'):
+                if part == 'CB':
+                    self.weather.append('CB')
                 idx += 1
                 continue
             
@@ -199,6 +243,52 @@ class METARParser:
             if match:
                 self.qnh = int(match.group(1))
                 break
+        
+        # Capture remarks section (everything after RMK)
+        rmk_idx = self.raw.find('RMK ')
+        if rmk_idx != -1:
+            self.remarks = self.raw[rmk_idx + 4:]
+        
+        # Parse CB details from remarks and full METAR
+        self._parse_cb_details()
+    
+    def _parse_cb_details(self):
+        """Parse CB distance/direction from METAR remarks and weather groups."""
+        full_text = self.raw.upper()
+        
+        # Pattern: CB followed by direction/distance
+        # Examples: "CB NW MOV E", "CB DSNT W", "CB OHD MOV NE", "CB NW-N 25NM"
+        # Longer patterns first to avoid partial matches (NW before N, etc.)
+        directions = r'(?:NE|NW|SE|SW|N|E|W|S|OHD|DSNT|VC)'
+        
+        # CB with direction: "CB NW MOV E", "CB DSNT SW"
+        cb_pattern = re.compile(
+            r'\bCB\s+(' + directions + r'(?:[-/]' + directions + r')?)'
+            r'(?:\s+(\d+)\s*NM)?'
+            r'(?:\s+MOV\s+(' + directions + r'))?',
+            re.IGNORECASE
+        )
+        
+        for match in cb_pattern.finditer(full_text):
+            detail = {
+                'location': match.group(1),
+                'distance_nm': int(match.group(2)) if match.group(2) else None,
+                'movement': match.group(3)
+            }
+            # DSNT = distant (typically 10-30 NM); VC = vicinity (5-10 NM)
+            if detail['distance_nm'] is None:
+                loc = detail['location'].upper()
+                if 'DSNT' in loc:
+                    detail['distance_nm'] = 25  # Estimate
+                elif 'VC' in loc:
+                    detail['distance_nm'] = 8   # Estimate
+                elif 'OHD' in loc:
+                    detail['distance_nm'] = 0   # Overhead
+            
+            self.cb_details.append(detail)
+        
+        # Also check for "TS" in weather groups (already sets has_ts_weather in parse())
+        # And check for TCU in cloud layers (towering cumulus - precursor to CB)
     
     def get_effective_wind_speed(self) -> int:
         """Return effective wind speed (gusts count as wind speed)."""
@@ -220,11 +310,54 @@ class METARParser:
         return None
     
     def has_cb(self) -> bool:
-        """Check if CB (cumulonimbus) is present."""
+        """Check if CB (cumulonimbus) is present in cloud layers, weather, or remarks."""
         for cloud in self.clouds:
             if cloud.get('type') == 'CB':
                 return True
+        # TS (thunderstorm) in weather implies CB activity
+        if self.has_ts_weather:
+            return True
+        # CB mentioned in remarks
+        if self.cb_details:
+            return True
         return False
+    
+    def has_cb_within_nm(self, max_nm: int = 30) -> bool:
+        """Check if CB is reported within a given distance (NM)."""
+        # CB in cloud layers = overhead
+        for cloud in self.clouds:
+            if cloud.get('type') == 'CB':
+                return True
+        # TS in weather = at the station
+        if self.has_ts_weather:
+            return True
+        # Check CB details from remarks
+        for cb in self.cb_details:
+            dist = cb.get('distance_nm')
+            if dist is not None and dist <= max_nm:
+                return True
+            elif dist is None:
+                # Unknown distance, assume could be close
+                return True
+        return False
+    
+    def get_cb_warnings(self) -> List[str]:
+        """Get human-readable CB warning strings."""
+        warnings = []
+        for cloud in self.clouds:
+            if cloud.get('type') == 'CB':
+                warnings.append(f"CB in cloud layer at {cloud['height_ft']}ft")
+        if self.has_ts_weather:
+            ts_wx = [w for w in self.weather if 'TS' in w.upper()]
+            warnings.append(f"Thunderstorm activity: {' '.join(ts_wx)}")
+        for cb in self.cb_details:
+            parts = [f"CB {cb['location']}"]
+            if cb.get('distance_nm') is not None:
+                parts.append(f"{cb['distance_nm']}NM")
+            if cb.get('movement'):
+                parts.append(f"MOV {cb['movement']}")
+            warnings.append(' '.join(parts))
+        return warnings
 
 
 class TAFParser:
@@ -236,6 +369,7 @@ class TAFParser:
         self.base_period = None
         self.becmg_periods = []
         self.tempo_periods = []
+        self.fm_periods = []  # FM (From) groups
         self.parse()
     
     def parse(self):
@@ -253,21 +387,24 @@ class TAFParser:
                     self.icao = part
                     break
         
-        # Split into base, BECMG, and TEMPO groups
-        # Base is everything before first BECMG/TEMPO
+        # Split into base, BECMG, TEMPO, and FM groups
+        # Base is everything before first BECMG/TEMPO/FM
         becmg_pattern = r'BECMG \d{4}/\d{4}'
         tempo_pattern = r'TEMPO \d{4}/\d{4}'
+        fm_pattern = r'FM\d{6}'
+        
+        # Combined pattern to find next period marker (for boundary detection)
+        next_period_re = re.compile(r'(BECMG \d{4}/\d{4}|TEMPO \d{4}/\d{4}|FM\d{6})')
         
         # Find all BECMG periods
         for match in re.finditer(becmg_pattern, text):
             start = match.start()
-            # Find end (next BECMG/TEMPO or end of string)
             end = len(text)
             
-            # Look for next period marker
-            next_match = re.search(r'(BECMG|TEMPO) \d{4}/\d{4}', text[start + 10:])
+            # Look for next period marker after this one
+            next_match = next_period_re.search(text, start + len(match.group()))
             if next_match:
-                end = start + 10 + next_match.start()
+                end = next_match.start()
             
             period_text = text[start:end].strip()
             self.becmg_periods.append(self._parse_period(period_text))
@@ -277,22 +414,30 @@ class TAFParser:
             start = match.start()
             end = len(text)
             
-            next_match = re.search(r'(BECMG|TEMPO) \d{4}/\d{4}', text[start + 10:])
+            next_match = next_period_re.search(text, start + len(match.group()))
             if next_match:
-                end = start + 10 + next_match.start()
+                end = next_match.start()
             
             period_text = text[start:end].strip()
             self.tempo_periods.append(self._parse_period(period_text))
         
-        # Base period is everything before first BECMG/TEMPO
-        base_end = len(text)
-        first_becmg = re.search(becmg_pattern, text)
-        first_tempo = re.search(tempo_pattern, text)
+        # Find all FM periods
+        for match in re.finditer(fm_pattern, text):
+            start = match.start()
+            end = len(text)
+            
+            next_match = next_period_re.search(text, start + len(match.group()))
+            if next_match:
+                end = next_match.start()
+            
+            period_text = text[start:end].strip()
+            self.fm_periods.append(self._parse_period(period_text))
         
-        if first_becmg:
-            base_end = min(base_end, first_becmg.start())
-        if first_tempo:
-            base_end = min(base_end, first_tempo.start())
+        # Base period is everything before first BECMG/TEMPO/FM
+        base_end = len(text)
+        first_marker = next_period_re.search(text)
+        if first_marker:
+            base_end = first_marker.start()
         
         base_text = text[:base_end].strip()
         self.base_period = self._parse_period(base_text)
@@ -301,6 +446,8 @@ class TAFParser:
         """Parse a single TAF period."""
         result = {
             'raw': period_text,
+            'valid_from_utc': None,  # Hour (0-23) UTC
+            'valid_to_utc': None,    # Hour (0-23) UTC
             'wind_dir': None,
             'wind_speed': None,
             'wind_gust': None,
@@ -309,6 +456,26 @@ class TAFParser:
             'weather': [],
             'has_cb': False
         }
+        
+        # Extract validity period times
+        # BECMG/TEMPO: "BECMG 3106/3108" or "TEMPO 3112/3118"
+        time_match = re.search(r'(?:BECMG|TEMPO)\s+\d{2}(\d{2})/\d{2}(\d{2})', period_text)
+        if time_match:
+            result['valid_from_utc'] = int(time_match.group(1))
+            result['valid_to_utc'] = int(time_match.group(2))
+        
+        # FM group: "FM310800" → from 08Z
+        fm_match = re.match(r'FM\d{2}(\d{2})(\d{2})', period_text)
+        if fm_match:
+            result['valid_from_utc'] = int(fm_match.group(1))
+            # FM periods run until next FM or end of TAF (set to 24 as sentinel)
+            result['valid_to_utc'] = 24
+        
+        # Base TAF validity: "3100/3124" or "0100/0206"
+        base_match = re.search(r'^\s*\w{4}\s+\d{6}Z\s+\d{2}(\d{2})/\d{2}(\d{2})', period_text)
+        if base_match:
+            result['valid_from_utc'] = int(base_match.group(1))
+            result['valid_to_utc'] = int(base_match.group(2))
         
         # Wind
         wind_pattern = r'(\d{3}|VRB)(\d{2,3})(G(\d{2,3}))?KT'
@@ -359,7 +526,7 @@ class TAFParser:
         return result
     
     def get_all_periods(self) -> List[dict]:
-        """Get all periods (base + BECMG + TEMPO)."""
+        """Get all periods (base + BECMG + TEMPO + FM)."""
         periods = []
         if self.base_period:
             periods.append(('BASE', self.base_period))
@@ -367,6 +534,8 @@ class TAFParser:
             periods.append(('BECMG', p))
         for p in self.tempo_periods:
             periods.append(('TEMPO', p))
+        for p in self.fm_periods:
+            periods.append(('FM', p))
         return periods
     
     def check_deterioration(self, vis_limit_m: int = 5000, ceiling_limit_ft: int = 1500) -> Tuple[bool, str]:
@@ -381,6 +550,130 @@ class TAFParser:
                     return True, f"{period_type}: Ceiling {cloud['height_ft']}ft < {ceiling_limit_ft}ft"
         
         return False, ""
+    
+    def get_sortie_window_conditions(self, sortie_utc_hour: int) -> dict:
+        """
+        Analyse TAF for a ±1 hour window around sortie time.
+        
+        Args:
+            sortie_utc_hour: Sortie time in UTC hours (0-23)
+        
+        Returns:
+            dict with worst-case conditions and analysis
+        """
+        window_start = (sortie_utc_hour - 1) % 24
+        window_end = (sortie_utc_hour + 1) % 24
+        
+        overlapping = []
+        
+        def _hours_overlap(p_from, p_to, w_from, w_end):
+            """Check if period [p_from, p_to) overlaps window [w_from, w_end]."""
+            if p_from is None or p_to is None:
+                return True  # If no time info, assume it could overlap
+            # Handle wrap-around midnight
+            if p_to <= p_from:
+                p_to += 24
+            if w_end <= w_from:
+                w_end += 24
+            return p_from < w_end + 1 and p_to > w_from  # +1 for inclusive end
+        
+        for period_type, period in self.get_all_periods():
+            p_from = period.get('valid_from_utc')
+            p_to = period.get('valid_to_utc')
+            
+            if _hours_overlap(p_from, p_to, window_start, window_end):
+                overlapping.append((period_type, period))
+        
+        if not overlapping:
+            return {'applicable': False, 'reason': 'No TAF periods cover sortie window'}
+        
+        # Find worst-case conditions across overlapping periods
+        worst_vis = None
+        worst_ceiling = None
+        worst_wind = 0
+        worst_gust = 0
+        has_cb = False
+        has_ts = False
+        weather_set = set()
+        deteriorating = False
+        
+        base_vis = None
+        base_ceiling = None
+        
+        for period_type, period in overlapping:
+            vis = period.get('visibility_m')
+            if vis is not None:
+                if worst_vis is None or vis < worst_vis:
+                    worst_vis = vis
+                if period_type == 'BASE':
+                    base_vis = vis
+            
+            # Ceiling from BKN/OVC layers
+            for cloud in period.get('clouds', []):
+                if cloud['coverage'] in ['BKN', 'OVC']:
+                    ceil = cloud['height_ft']
+                    if worst_ceiling is None or ceil < worst_ceiling:
+                        worst_ceiling = ceil
+                    if period_type == 'BASE':
+                        if base_ceiling is None or ceil < base_ceiling:
+                            base_ceiling = ceil
+                    break
+            
+            wind = period.get('wind_speed', 0) or 0
+            gust = period.get('wind_gust', 0) or 0
+            effective = gust if gust else wind
+            if effective > worst_wind:
+                worst_wind = effective
+            if gust > worst_gust:
+                worst_gust = gust
+            
+            if period.get('has_cb'):
+                has_cb = True
+            
+            for wx in period.get('weather', []):
+                weather_set.add(wx)
+                if wx == 'TS':
+                    has_ts = True
+        
+        # Check for deterioration within window
+        if base_vis is not None and worst_vis is not None and worst_vis < base_vis:
+            deteriorating = True
+        if base_ceiling is not None and worst_ceiling is not None and worst_ceiling < base_ceiling:
+            deteriorating = True
+        
+        # Build summary
+        parts = []
+        if worst_vis is not None:
+            parts.append(f"Vis ≥{worst_vis}m")
+        if worst_ceiling is not None:
+            parts.append(f"Ceil ≥{worst_ceiling}ft")
+        if worst_wind > 0:
+            wind_str = f"Wind ≤{worst_wind}kt"
+            if worst_gust > 0:
+                wind_str += f" G{worst_gust}"
+            parts.append(wind_str)
+        if has_cb:
+            parts.append("⚠️ CB")
+        if has_ts:
+            parts.append("⚠️ TS")
+        if weather_set - {'TS'}:
+            parts.append(f"Wx: {','.join(sorted(weather_set - {'TS'}))}")
+        
+        summary = " | ".join(parts) if parts else "No significant weather"
+        
+        return {
+            'applicable': True,
+            'worst_vis_m': worst_vis,
+            'worst_ceiling_ft': worst_ceiling,
+            'worst_wind_kt': worst_wind,
+            'worst_gust_kt': worst_gust,
+            'has_cb': has_cb,
+            'has_ts': has_ts,
+            'weather': sorted(weather_set),
+            'deteriorating': deteriorating,
+            'overlapping_periods': len(overlapping),
+            'summary': summary
+        }
 
 
 def calculate_wind_components(wind_dir: int, wind_speed: int, runway_heading: int) -> Tuple[float, float]:
@@ -445,7 +738,10 @@ def determine_phase(metar: METARParser, runway_heading: int, airfield_data: dict
         'tailwind': round(tailwind, 1),
         'temp': metar.temp,
         'cavok': metar.cavok,
-        'has_cb': metar.has_cb()
+        'has_cb': metar.has_cb(),
+        'has_ts': metar.has_ts_weather,
+        'cb_details': metar.cb_details,
+        'cb_warnings': metar.get_cb_warnings()
     }
     
     vis_km = result['conditions']['visibility_km']
@@ -460,9 +756,13 @@ def determine_phase(metar: METARParser, runway_heading: int, airfield_data: dict
         result['reasons'].append(f'⚠️ Wind exceeds limits ({effective_wind}kt > 35kt)')
         return result
     
-    if metar.has_cb():
+    if metar.has_cb_within_nm(30):
         result['phase'] = 'RECALL'
-        result['reasons'].append('⚠️ CB (cumulonimbus) present')
+        cb_warnings = metar.get_cb_warnings()
+        if cb_warnings:
+            result['reasons'].append(f'⚠️ CB within 30NM: {"; ".join(cb_warnings)}')
+        else:
+            result['reasons'].append('⚠️ CB (cumulonimbus) present')
         return result
     
     # Check HOLD conditions
@@ -628,18 +928,73 @@ def determine_phase(metar: METARParser, runway_heading: int, airfield_data: dict
     return result
 
 
-def fetch_taf(icao: str, aliases: list = None) -> Optional[str]:
-    """Fetch TAF from aviationweather.gov. Tries ICAO aliases if primary returns empty."""
-    codes_to_try = [icao] + (aliases or [])
-    for code in codes_to_try:
-        url = f"https://aviationweather.gov/api/data/taf?ids={code}&format=raw"
-        try:
-            with urllib.request.urlopen(url, timeout=10) as response:
-                data = response.read().decode('utf-8').strip()
-                if data and not data.startswith('No TAF'):
+def _taf_cache_path(icao: str) -> str:
+    """Return the cache file path for an ICAO code."""
+    return os.path.join(TAF_CACHE_DIR, f"{icao.upper()}.taf")
+
+
+def _read_taf_cache(icao: str) -> Optional[str]:
+    """Read TAF from cache if it exists and is fresh (< 30 min old)."""
+    path = _taf_cache_path(icao)
+    try:
+        stat = os.stat(path)
+        age = time.time() - stat.st_mtime
+        if age < TAF_CACHE_EXPIRY_SECS:
+            with open(path, 'r') as f:
+                data = f.read().strip()
+                if data:
                     return data
-        except (urllib.error.URLError, urllib.error.HTTPError):
-            pass
+    except (OSError, IOError):
+        pass
+    return None
+
+
+def _write_taf_cache(icao: str, taf_data: str) -> None:
+    """Write TAF data to cache file."""
+    try:
+        os.makedirs(TAF_CACHE_DIR, exist_ok=True)
+        path = _taf_cache_path(icao)
+        with open(path, 'w') as f:
+            f.write(taf_data)
+    except (OSError, IOError):
+        pass  # Cache write failure is non-fatal
+
+
+def fetch_taf(icao: str, aliases: list = None, use_cache: bool = True) -> Optional[str]:
+    """Fetch TAF from aviationweather.gov with caching and fallback sources.
+    
+    Tries ICAO aliases if primary returns empty.
+    Uses file-based cache (30 min expiry) unless use_cache=False.
+    Falls back to alternate URL if primary fails.
+    """
+    codes_to_try = [icao] + (aliases or [])
+    
+    # Check cache first (for primary code)
+    if use_cache:
+        for code in codes_to_try:
+            cached = _read_taf_cache(code)
+            if cached:
+                return cached
+    
+    # Primary + fallback URLs for each code
+    for code in codes_to_try:
+        urls = [
+            f"https://aviationweather.gov/api/data/taf?ids={code}&format=raw",
+            f"https://aviationweather.gov/api/data/taf?ids={code}&format=raw&taf=true",
+        ]
+        
+        for url in urls:
+            try:
+                with urllib.request.urlopen(url, timeout=5) as response:
+                    data = response.read().decode('utf-8').strip()
+                    if data and not data.startswith('No TAF'):
+                        # Cache the result
+                        if use_cache:
+                            _write_taf_cache(code, data)
+                        return data
+            except (urllib.error.URLError, urllib.error.HTTPError, OSError):
+                continue
+    
     return None
 
 
@@ -682,7 +1037,8 @@ def select_runway(metar: METARParser, airfield_data: dict, icao: str) -> Tuple[s
 
 def check_alternate_suitability(icao: str, taf_string: Optional[str], 
                                 airfield_data: dict, oekf_wind_dir: int = None, 
-                                oekf_wind_speed: int = None) -> dict:
+                                oekf_wind_speed: int = None,
+                                use_cache: bool = True) -> dict:
     """
     Check if alternate airfield is suitable.
     
@@ -705,7 +1061,7 @@ def check_alternate_suitability(icao: str, taf_string: Optional[str],
     
     # Fetch TAF if not provided
     if not taf_string:
-        taf_string = fetch_taf(icao)
+        taf_string = fetch_taf(icao, use_cache=use_cache)
     
     if not taf_string:
         # No TAF - use OEKF winds as estimate if available
@@ -916,7 +1272,9 @@ def calculate_divert_fuel(icao: str, airfield_data: dict, solo: bool = False,
 def format_output(phase_result: dict, metar: METARParser, runway: str, 
                   alternate_required: bool, checked_alternates: List[dict] = None,
                   best_alternate: dict = None, taf: TAFParser = None, 
-                  warnings: List[str] = None, show_checks: bool = False) -> str:
+                  warnings: List[str] = None, show_checks: bool = False,
+                  bird_info: dict = None, sortie_window: dict = None,
+                  parse_warnings: List[str] = None) -> str:
     """Format human-readable output."""
     output = []
     
@@ -1006,6 +1364,24 @@ def format_output(phase_result: dict, metar: METARParser, runway: str,
     
     output.append("")
     
+    # Bird-Strike Risk Level (LOP 5-13)
+    if bird_info:
+        level = bird_info['level']
+        bird_emoji = '🟡' if level == 'MODERATE' else '🔴'
+        output.append(f"🐦 Bird-Strike Risk: {bird_emoji} {level}")
+        if bird_info.get('phase_impact'):
+            output.append(f"  ⚠️ {bird_info['phase_impact']}")
+        for restriction in bird_info.get('restrictions', []):
+            output.append(f"  • {restriction}")
+        output.append("")
+    
+    # Sortie Window Analysis
+    if sortie_window and sortie_window.get('applicable'):
+        sw = sortie_window
+        det_flag = " ⚠️ DETERIORATING" if sw.get('deteriorating') else ""
+        output.append(f"📅 Sortie Window: {sw['local_start']}-{sw['local_end']}L — {sw['summary']}{det_flag}")
+        output.append("")
+    
     # TAF Forecast Trend
     if taf and taf.icao == 'OEKF':
         output.append("📈 Forecast (OEKF TAF):")
@@ -1090,6 +1466,13 @@ def format_output(phase_result: dict, metar: METARParser, runway: str,
     
     output.append("")
     
+    # Parse warnings (non-critical)
+    if parse_warnings:
+        output.append("🔍 Parse Notes:")
+        for pw in parse_warnings:
+            output.append(f"  {pw}")
+        output.append("")
+    
     # Warnings
     if warnings:
         output.append("⚠️  Warnings:")
@@ -1107,10 +1490,15 @@ def main():
     parser.add_argument('--rwy', '--runway', dest='runway', help='Runway in use (e.g., 33L)')
     parser.add_argument('--warning', help='Weather warning string')
     parser.add_argument('--notes', nargs='*', help='Operational notes (e.g., "RADAR procedures only" "No medical")')
+    parser.add_argument('--bird', choices=['low', 'moderate', 'severe'], default='low',
+                        help='Bird-Strike Risk Level (LOP 5-13). Default: low')
     parser.add_argument('--solo', action='store_true', help='Solo cadet (for fuel calculation)')
     parser.add_argument('--opposite', action='store_true', help='Diverting from opposite side')
     parser.add_argument('--checks', action='store_true', help='Show phase condition checks')
     parser.add_argument('--json', action='store_true', help='Output in JSON format')
+    parser.add_argument('--no-cache', action='store_true', help='Bypass TAF cache')
+    parser.add_argument('--sortie-time', dest='sortie_time',
+                        help='Sortie time in local (AST) HHmm format, e.g. "1030" for 10:30 local')
     
     args = parser.parse_args()
     
@@ -1161,9 +1549,25 @@ def main():
     # Parse METAR
     metar = METARParser(args.metar)
     
-    if not metar.icao:
-        print("Error: Could not extract ICAO from METAR", file=sys.stderr)
+    # Validate METAR parse
+    parse_issues = metar.validate()
+    critical_issues = [i for i in parse_issues if i.startswith('❌')]
+    
+    if critical_issues:
+        print("⚠️  METAR PARSE ERRORS:", file=sys.stderr)
+        print(f"  Input: {args.metar}", file=sys.stderr)
+        for issue in parse_issues:
+            print(f"  {issue}", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("Expected format: OEKF DDHHmmZ dddssKT VVVV [wx] [clouds] TT/TD QPPPP", file=sys.stderr)
+        print("Example: OEKF 310600Z 33012KT 9999 FEW080 22/10 Q1018", file=sys.stderr)
         sys.exit(1)
+    
+    # Show non-critical parse warnings
+    warning_issues = [i for i in parse_issues if i.startswith('⚠️')]
+    if warning_issues:
+        for issue in warning_issues:
+            print(f"Parse: {issue}", file=sys.stderr)
     
     if metar.icao != 'OEKF':
         print(f"Warning: METAR is for {metar.icao}, expected OEKF", file=sys.stderr)
@@ -1203,6 +1607,19 @@ def main():
         alternate_required = True
         warnings.append(f"Ceiling below VFR minimums ({cond['ceiling_ft']}ft)")
     
+    # Add CB-specific warnings from METAR
+    cb_warns = cond.get('cb_warnings', [])
+    if cb_warns and phase_result['phase'] != 'RECALL':
+        for cw in cb_warns:
+            warnings.append(f"⛈️ {cw}")
+    
+    # Check TAF for CB in any period
+    if taf:
+        for period_type, period in taf.get_all_periods():
+            if period.get('has_cb') and period_type != 'BASE':
+                # Already added via check_deterioration for TEMPO, but add specific CB warning
+                pass  # Handled below in TAF deterioration check
+    
     # Check TAF for deterioration
     if taf:
         deteriorates, det_reason = taf.check_deterioration()
@@ -1217,6 +1634,53 @@ def main():
                 warnings.append(f"CB forecast in TAF ({period_type})")
                 break
     
+    # Bird-Strike Risk Level (LOP 5-13)
+    # UNRESTRICTED and RESTRICTED imply solo cadets — cannot be phased when birds > LOW.
+    # FS VFR implies 1st solo cadets — also cannot be phased when birds > LOW.
+    # Highest declarable phase during birds > LOW is VFR.
+    bird_level = args.bird.upper()
+    bird_info = None
+    
+    if bird_level != 'LOW':
+        weather_phase = phase_result['phase']  # Original weather-determined phase
+        bird_info = {'level': bird_level, 'restrictions': [], 'phase_impact': None,
+                     'weather_phase': weather_phase}
+        
+        # Cap phase at VFR — solo phases cannot be declared when birds > LOW
+        solo_phases = ['UNRESTRICTED', 'RESTRICTED', 'FS VFR']
+        if weather_phase in solo_phases:
+            phase_result['phase'] = 'VFR'
+            phase_result['restrictions'] = {
+                'solo_cadets': False,
+                'first_solo': False,
+                'solo_note': f'Bird activity {bird_level} — phase capped at VFR'
+            }
+            bird_info['phase_impact'] = (
+                f"Weather supports {weather_phase} — "
+                f"capped to VFR (birds {bird_level}, no solo phases)"
+            )
+        else:
+            # VFR/IFR/HOLD/RECALL — phase unchanged, but still no solo
+            phase_result['restrictions']['solo_cadets'] = False
+            phase_result['restrictions']['first_solo'] = False
+        
+        if bird_level == 'MODERATE':
+            bird_info['restrictions'] = [
+                'No formation wing take-offs',
+                'No solo cadet take-offs'
+            ]
+            warnings.append(f'🐦 Bird-Strike Risk: MODERATE — phase capped at VFR, no solo ops')
+            
+        elif bird_level == 'SEVERE':
+            bird_info['restrictions'] = [
+                'No further take-offs',
+                'Recovery via single aircraft straight-in/instrument approaches only',
+                'Consider changing active runway',
+                'Divert aircraft as required (fuel permitting)'
+            ]
+            phase_result['restrictions']['note'] = 'SEVERE BIRDS: No take-offs. Single aircraft straight-in recovery only.'
+            warnings.append(f'🐦 Bird-Strike Risk: SEVERE — NO TAKE-OFFS, straight-in recovery only')
+    
     # Add weather warning
     if args.warning:
         warnings.append(f"Weather warning: {args.warning}")
@@ -1226,6 +1690,37 @@ def main():
                 # CB within 30NM triggers RECALL
                 phase_result['phase'] = 'RECALL'
                 phase_result['reasons'].append('CB within 30NM')
+    
+    # Sortie time window analysis
+    sortie_window = None
+    if args.sortie_time and taf:
+        try:
+            st = args.sortie_time.strip()
+            if len(st) == 4 and st.isdigit():
+                local_hour = int(st[:2])
+                local_min = int(st[2:])
+                # Saudi Arabia = UTC+3
+                utc_hour = (local_hour - 3) % 24
+                
+                sortie_window = taf.get_sortie_window_conditions(utc_hour)
+                if sortie_window.get('applicable'):
+                    # Add local time display info
+                    win_start_h = (local_hour - 1) % 24
+                    win_end_h = (local_hour + 1) % 24
+                    sortie_window['local_start'] = f"{win_start_h:02d}{local_min:02d}"
+                    sortie_window['local_end'] = f"{win_end_h:02d}{local_min:02d}"
+                    sortie_window['sortie_local'] = st
+                    
+                    # Flag deterioration as warning
+                    if sortie_window.get('deteriorating'):
+                        warnings.append(f"📅 Conditions expected to deteriorate during sortie window ({st}L)")
+                    if sortie_window.get('has_cb'):
+                        warnings.append(f"📅 CB forecast during sortie window ({st}L)")
+                        alternate_required = True
+            else:
+                print(f"Warning: Invalid --sortie-time format '{st}', expected HHmm", file=sys.stderr)
+        except (ValueError, IndexError):
+            print(f"Warning: Could not parse --sortie-time '{args.sortie_time}'", file=sys.stderr)
     
     # Find suitable alternates
     checked_alternates = []
@@ -1237,12 +1732,14 @@ def main():
         for icao in priority:
             # Fetch TAF for alternate (try ICAO aliases if primary empty)
             aliases = airfield_data.get(icao, {}).get('icao_aliases', [])
-            alt_taf_str = fetch_taf(icao, aliases=aliases)
+            use_cache = not args.no_cache
+            alt_taf_str = fetch_taf(icao, aliases=aliases, use_cache=use_cache)
             alt_taf = TAFParser(alt_taf_str) if alt_taf_str else None
             
             suitability = check_alternate_suitability(
                 icao, alt_taf_str, airfield_data, 
-                metar.wind_dir, metar.get_effective_wind_speed()
+                metar.wind_dir, metar.get_effective_wind_speed(),
+                use_cache=use_cache
             )
             
             # Calculate fuel
@@ -1286,6 +1783,9 @@ def main():
             'best_alternate': best_alternate,
             'checked_alternates': checked_alternates,
             'warnings': warnings,
+            'bird_risk_level': bird_level,
+            'bird_info': bird_info,
+            'sortie_window': sortie_window,
             'notes': args.notes or []
         }
         print(json.dumps(json_output, indent=2))
@@ -1296,7 +1796,10 @@ def main():
             best_alternate=best_alternate,
             taf=taf,
             warnings=warnings if warnings else None,
-            show_checks=args.checks
+            show_checks=args.checks,
+            bird_info=bird_info,
+            sortie_window=sortie_window,
+            parse_warnings=warning_issues if warning_issues else None
         )
         # Append operational notes if provided
         if args.notes:
