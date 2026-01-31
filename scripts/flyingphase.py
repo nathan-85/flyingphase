@@ -1035,14 +1035,55 @@ def select_runway(metar: METARParser, airfield_data: dict, icao: str) -> Tuple[s
     return best_runway or "Unknown", best_heading
 
 
+def _approach_navaid_required(approach: dict) -> Optional[str]:
+    """Return the navaid type required for an approach, or None."""
+    app_type = approach.get('type', '').upper()
+    if 'ILS' in app_type:
+        return 'ILS'
+    if 'VOR' in app_type:
+        return 'VOR'
+    if 'TACAN' in app_type:
+        return 'TACAN'
+    if 'NDB' in app_type:
+        return 'NDB'
+    if 'RNAV' in app_type or 'RNP' in app_type or 'GPS' in app_type:
+        return None  # Satellite-based, no ground navaid required
+    return None
+
+
+def _is_navaid_serviceable(navaid_type: str, notam_impact: dict) -> bool:
+    """Check if a navaid type is serviceable given NOTAM impact data."""
+    if not notam_impact:
+        return True  # No NOTAM data = assume serviceable
+    if navaid_type == 'ILS' and not notam_impact.get('ils_available', True):
+        return False
+    if navaid_type == 'VOR' and not notam_impact.get('vor_available', True):
+        return False
+    # For TACAN/NDB, check warnings list
+    if navaid_type in ('TACAN', 'NDB'):
+        for w in notam_impact.get('warnings', []):
+            if f'{navaid_type} unserviceable' in w:
+                return False
+    return True
+
+
 def check_alternate_suitability(icao: str, taf_string: Optional[str], 
                                 airfield_data: dict, oekf_wind_dir: int = None, 
                                 oekf_wind_speed: int = None,
-                                use_cache: bool = True) -> dict:
+                                use_cache: bool = True,
+                                notam_impact: dict = None) -> dict:
     """
-    Check if alternate airfield is suitable.
+    Check if alternate airfield is suitable per FOB 18-3.
     
-    Checks ALL TAF periods (base, BECMG, TEMPO) for suitability.
+    FOB 18-3e: Alternate must have:
+      1. A published IAP suitable for the aircraft type (navaid must be serviceable)
+      2. Actual/forecast weather ETA ±1hr (prevailing OR intermittent/TEMPO):
+         - Ceiling: max(1000ft, IAP ceiling + 500ft)
+         - Visibility: max(3000m, IAP visibility + 1600m)
+    
+    All TAF periods (BASE, BECMG, TEMPO) are hard checks — FOB says
+    "prevailing or intermittently less than VMC" triggers alternate requirement,
+    so TEMPO below minimums rejects the alternate.
     """
     result = {
         'suitable': True,
@@ -1095,8 +1136,32 @@ def check_alternate_suitability(icao: str, taf_string: Optional[str],
         result['reasons'].append('No runway data')
         return result
     
-    # Check each period
-    unsuitable_periods = []
+    # FOB 18-3e(1): Must have a published IAP with serviceable navaid
+    # Filter approaches to only those with serviceable navaids
+    usable_approaches = []
+    rejected_approaches = []
+    for app in approaches:
+        navaid = _approach_navaid_required(app)
+        if navaid and not _is_navaid_serviceable(navaid, notam_impact):
+            rejected_approaches.append(f"{app.get('type', '?')} RWY {app.get('runway', '?')} ({navaid} U/S)")
+        else:
+            usable_approaches.append(app)
+    
+    if not usable_approaches:
+        if rejected_approaches:
+            result['suitable'] = False
+            result['reasons'].append(f"No usable IAP — {', '.join(rejected_approaches)}")
+            # Still set runway/approach info for display
+            if approaches:
+                result['approach'] = approaches[0]
+            return result
+        elif not approaches:
+            # No approaches defined at all — use generic minimums
+            result['warnings'].append('No published IAP data — using generic minimums (1000ft/3000m)')
+    
+    # Check each TAF period — ALL periods are hard checks per FOB 18-3
+    # "prevailing or intermittently less than VMC"
+    unsuitable_reasons = []
     
     for period_type, period in periods:
         # Select best runway for this period's wind
@@ -1106,10 +1171,8 @@ def check_alternate_suitability(icao: str, taf_string: Optional[str],
         effective_wind = wind_gust if wind_gust else wind_speed
         
         if wind_dir is None:
-            # Use first runway if no wind data
             runway = runways[0]
         else:
-            # Find best runway
             best_diff = 180
             runway = runways[0]
             for rwy in runways:
@@ -1129,32 +1192,27 @@ def check_alternate_suitability(icao: str, taf_string: Optional[str],
             headwind = 0
             tailwind = 0
         
-        # Check crosswind and tailwind limits
+        # Wind limits
         if crosswind > 24:
-            unsuitable_periods.append(f'{period_type}: Crosswind {crosswind:.1f}kt > 24kt')
-        
+            unsuitable_reasons.append(f'{period_type}: Crosswind {crosswind:.1f}kt > 24kt')
         if tailwind > 10:
-            unsuitable_periods.append(f'{period_type}: Tailwind {tailwind:.1f}kt > 10kt')
+            unsuitable_reasons.append(f'{period_type}: Tailwind {tailwind:.1f}kt > 10kt')
         
-        # Check ceiling and visibility
-        # Find approach minimums
+        # FOB 18-3e(2): Weather minimums from usable approach
+        # Find best usable approach for this runway
         min_vis_m = 3000
         min_ceiling_ft = 1000
-        
         suitable_approach = None
-        for app in approaches:
-            if app['runway'] == runway['id'] or app.get('runway') == runway.get('reciprocal'):
+        
+        for app in usable_approaches:
+            if app.get('runway') == runway['id'] or app.get('runway') == runway.get('reciprocal'):
                 suitable_approach = app
                 break
         
+        if not suitable_approach and usable_approaches:
+            suitable_approach = usable_approaches[0]
+        
         if suitable_approach:
-            app_vis = suitable_approach['minimums'].get('visibility_m', 800)
-            app_ceil = suitable_approach['minimums'].get('ceiling_ft', 200)
-            min_vis_m = max(3000, app_vis + 1600)
-            min_ceiling_ft = max(1000, app_ceil + 500)
-        elif approaches:
-            # Use first available approach
-            suitable_approach = approaches[0]
             app_vis = suitable_approach['minimums'].get('visibility_m', 800)
             app_ceil = suitable_approach['minimums'].get('ceiling_ft', 200)
             min_vis_m = max(3000, app_vis + 1600)
@@ -1163,42 +1221,33 @@ def check_alternate_suitability(icao: str, taf_string: Optional[str],
         # Check visibility
         vis_m = period.get('visibility_m')
         if vis_m and vis_m < min_vis_m:
-            unsuitable_periods.append(f'{period_type}: Vis {vis_m}m < {min_vis_m}m')
+            unsuitable_reasons.append(f'{period_type}: Vis {vis_m}m < {min_vis_m}m')
         
         # Check ceiling
         for cloud in period.get('clouds', []):
             if cloud['coverage'] in ['BKN', 'OVC']:
                 if cloud['height_ft'] < min_ceiling_ft:
-                    unsuitable_periods.append(
+                    unsuitable_reasons.append(
                         f'{period_type}: Ceiling {cloud["height_ft"]}ft < {min_ceiling_ft}ft'
                     )
                 break
         
-        # Check for CB
+        # CB
         if period.get('has_cb'):
-            unsuitable_periods.append(f'{period_type}: CB present')
+            unsuitable_reasons.append(f'{period_type}: CB forecast')
         
-        # Store first period data
+        # Store base period data for display
         if period_type == 'BASE' or result['runway'] is None:
             result['runway'] = runway['id']
             result['crosswind'] = round(crosswind, 1)
             result['tailwind'] = round(tailwind, 1)
             result['approach'] = suitable_approach
     
-    # Determine suitability
-    # BECMG periods make it unsuitable
-    # TEMPO periods are warnings but may not reject
-    
-    for issue in unsuitable_periods:
-        if issue.startswith('BECMG'):
-            result['suitable'] = False
-            result['reasons'].append(issue)
-        elif issue.startswith('TEMPO'):
-            result['warnings'].append(issue)
-        else:
-            # BASE period issue
-            result['suitable'] = False
-            result['reasons'].append(issue)
+    # ALL periods are hard rejects per FOB 18-3
+    # (TEMPO = "intermittently less than VMC")
+    if unsuitable_reasons:
+        result['suitable'] = False
+        result['reasons'] = unsuitable_reasons
     
     return result
 
@@ -1756,28 +1805,32 @@ def main():
             alt_taf_str = fetch_taf(icao, aliases=aliases, use_cache=use_cache)
             alt_taf = TAFParser(alt_taf_str) if alt_taf_str else None
             
-            suitability = check_alternate_suitability(
-                icao, alt_taf_str, airfield_data, 
-                metar.wind_dir, metar.get_effective_wind_speed(),
-                use_cache=use_cache
-            )
-            
-            # Apply NOTAM impact to alternate suitability
+            # Get NOTAM impact for this alternate (if available)
+            notam_impact = None
             if notam_results and notam_results.get('status') == 'ok':
                 try:
                     notam_impact = get_notam_impact_on_alternate(icao, notam_results)
-                    
+                except Exception:
+                    pass
+            
+            suitability = check_alternate_suitability(
+                icao, alt_taf_str, airfield_data, 
+                metar.wind_dir, metar.get_effective_wind_speed(),
+                use_cache=use_cache,
+                notam_impact=notam_impact
+            )
+            
+            # Apply NOTAM-level disqualifiers (AD closed, all runways closed)
+            if notam_impact:
+                try:
                     if not notam_impact['suitable']:
-                        # Aerodrome closed by NOTAM
                         suitability['suitable'] = False
                         suitability['reasons'] = suitability.get('reasons', [])
-                        suitability['reasons'].append('NOTAM: Aerodrome closed')
+                        suitability['reasons'].insert(0, 'NOTAM: Aerodrome closed')
                     
                     if notam_impact.get('closed_runways'):
-                        # Check if all runways are closed
                         ad_rwys = [r['id'] for r in airfield_data.get(icao, {}).get('runways', [])]
                         closed = notam_impact['closed_runways']
-                        # Runway NOTAM format may be "13/31" — expand to check both
                         closed_ids = set()
                         for cr in closed:
                             for part in cr.split('/'):
@@ -1787,25 +1840,15 @@ def main():
                         if all_closed and ad_rwys:
                             suitability['suitable'] = False
                             suitability['reasons'] = suitability.get('reasons', [])
-                            suitability['reasons'].append(f"NOTAM: All runways closed ({', '.join(closed)})")
+                            suitability['reasons'].insert(0, f"NOTAM: All runways closed ({', '.join(closed)})")
                         
-                        suitability['warnings'] = suitability.get('warnings', [])
                         for cr in closed:
                             suitability['warnings'].append(f"NOTAM: RWY {cr} closed")
                     
-                    if not notam_impact.get('ils_available', True):
-                        suitability['warnings'] = suitability.get('warnings', [])
-                        suitability['warnings'].append('NOTAM: ILS unserviceable')
-                    
-                    if not notam_impact.get('vor_available', True):
-                        suitability['warnings'] = suitability.get('warnings', [])
-                        suitability['warnings'].append('NOTAM: VOR unserviceable')
-                    
                     if notam_impact.get('bird_activity'):
-                        suitability['warnings'] = suitability.get('warnings', [])
                         suitability['warnings'].append('NOTAM: Bird activity reported')
                 except Exception:
-                    pass  # Don't let NOTAM processing break alternate selection
+                    pass
             
             # Calculate fuel
             fuel_lbs, fuel_explanation = calculate_divert_fuel(
