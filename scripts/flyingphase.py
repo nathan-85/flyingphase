@@ -1547,14 +1547,47 @@ def format_output(phase_result: dict, metar: METARParser, runway: str,
     output.append(f"{emoji} KFAA Phase: {phase_result['phase']}")
     output.append("")
     
-    # Always show phase checks so users can verify the determination
+    # Always show phase checks — actual phase first, then failed higher phases
     if phase_result.get('checks'):
-        output.append("✓ Phase Checks:")
-        for phase_name, checks in phase_result['checks'].items():
-            output.append(f"  {phase_name}:")
-            for check_name, passed in checks:
+        actual_phase = phase_result['phase']
+        output.append(f"✓ Phase Checks ({actual_phase}):")
+        
+        # Determine the weather-determined phase (before bird/service caps)
+        weather_phase = actual_phase
+        if bird_info and bird_info.get('weather_phase'):
+            weather_phase = bird_info['weather_phase']
+        # Service impacts may have also capped the phase
+        service_weather_phase = phase_result.get('_weather_phase', weather_phase)
+        
+        # Show the actual determined weather phase checks first (the one that passed)
+        checks_dict = phase_result['checks']
+        if weather_phase in checks_dict:
+            output.append(f"  {weather_phase}:")
+            for check_name, passed in checks_dict[weather_phase]:
                 check_emoji = "✅" if passed else "❌"
                 output.append(f"    {check_emoji} {check_name}")
+        
+        # Show bird activity and service impacts as check items
+        if bird_info and bird_info.get('phase_impact'):
+            output.append(f"    ❌ Bird activity {bird_info['level']}")
+        for si in (phase_result.get('_service_impacts') or []):
+            if si.get('phase_impact'):
+                output.append(f"    ❌ {si['service']} — {si['action']}")
+        
+        # Show failed higher phases (above the weather phase)
+        phase_order = ['UNRESTRICTED', 'RESTRICTED', 'FS VFR', 'VFR', 'IFR']
+        try:
+            wp_idx = phase_order.index(weather_phase)
+        except ValueError:
+            wp_idx = len(phase_order)
+        
+        for phase_name in phase_order[:wp_idx]:
+            if phase_name in checks_dict and phase_name != weather_phase:
+                output.append(f"  {phase_name}:")
+                for check_name, passed in checks_dict[phase_name]:
+                    if not passed:
+                        output.append(f"    ❌ {check_name}")
+        
         output.append("")
     
     # (Old metar_original verbose section removed — pipeline section below replaces it)
@@ -2170,6 +2203,119 @@ def main():
             ]
             phase_result['restrictions']['note'] = 'SEVERE BIRDS: No take-offs. Single aircraft straight-in recovery only.'
             warnings.append(f'🐦 Bird-Strike Risk: SEVERE — NO TAKE-OFFS, straight-in recovery only')
+    
+    # --- AIRFIELD SERVICES (LOP 5-11, Table 5-5) ---
+    # Parse notes for service impacts and apply to phase determination.
+    service_impacts = []
+    if args.notes:
+        notes_upper = ' '.join(args.notes).upper()
+        
+        # Table 5-5 KFAA Operations — any of these missing → HOLD/RECALL
+        hold_services = {
+            'ATC': [r'\bNO\s+ATC\b', r'\bATC\s+(?:DOWN|FAIL|U/?S|UNAVAIL)'],
+            'SAR HELICOPTER': [r'\bNO\s+SAR\b', r'\bSAR\s+(?:HELICOPTER|HELO?)?\s*(?:DOWN|FAIL|U/?S|UNAVAIL)'],
+            'MEDICAL': [r'\bNO\s+(?:MEDICAL|DOCTOR|AMBULANCE)\b',
+                        r'\b(?:MEDICAL|DOCTOR|AMBULANCE)\s+(?:DOWN|FAIL|U/?S|UNAVAIL)'],
+            'FIRE/CRASH': [r'\bNO\s+(?:FIRE|CRASH|CFR)\b',
+                           r'\b(?:FIRE|CRASH|CFR)\s+(?:DOWN|FAIL|U/?S|UNAVAIL|RESCUE)?\s*(?:DOWN|FAIL|U/?S|UNAVAIL)'],
+        }
+        
+        for service_name, patterns in hold_services.items():
+            for pat in patterns:
+                if re.search(pat, notes_upper):
+                    service_impacts.append({
+                        'service': service_name,
+                        'action': 'STOP flying',
+                        'phase_impact': 'HOLD',
+                        'ref': 'LOP 5-11 Table 5-5'
+                    })
+                    break
+        
+        # Table 5-5 Training Area — radar failures
+        # "No Radar Procedures" / "Radar failure" → VFR cap, no solo
+        radar_patterns = [
+            r'\bNO\s+RADAR\b',
+            r'\bRADAR\s+(?:FAIL|DOWN|U/?S|UNAVAIL|PROCEDURE)',
+            r'\bWITHOUT\s+RADAR\b',
+        ]
+        radar_down = False
+        for pat in radar_patterns:
+            if re.search(pat, notes_upper):
+                radar_down = True
+                break
+        
+        if radar_down:
+            service_impacts.append({
+                'service': 'RADAR',
+                'action': 'No solo cadets, use No Radar Procedures',
+                'phase_impact': 'VFR',
+                'ref': 'LOP 5-11 Table 5-5'
+            })
+        
+        # MoCO not in position → no T-21 T/O or landing on that runway
+        if re.search(r'\bNO\s+MOCO\b|\bMOCO\s+(?:DOWN|FAIL|U/?S|UNAVAIL|NOT)', notes_upper):
+            service_impacts.append({
+                'service': 'MoCO',
+                'action': 'No T-21 take-offs/landings until MoCO in position',
+                'phase_impact': None,  # Doesn't change phase, operational restriction
+                'ref': 'LOP 5-11 Table 5-5'
+            })
+        
+        # No comms with radar → RECALL
+        if re.search(r'\bNO\s+(?:AIR\s+TO\s+GROUND\s+)?COMMS?\s+(?:WITH\s+)?RADAR\b', notes_upper):
+            service_impacts.append({
+                'service': 'RADAR COMMS',
+                'action': 'STOP solo cadet flying, use No Radar Procedures',
+                'phase_impact': 'RECALL',
+                'ref': 'LOP 5-11 Table 5-5'
+            })
+        
+        # DVORTAC / Guard frequency
+        if re.search(r'\bNO\s+(?:DVORTAC|GUARD)\b|\b(?:DVORTAC|GUARD)\s+(?:DOWN|FAIL|U/?S|UNAVAIL)', notes_upper):
+            service_impacts.append({
+                'service': 'DVORTAC/GUARD',
+                'action': 'STOP solo cadet flying in training areas',
+                'phase_impact': 'VFR',
+                'ref': 'LOP 5-11 Table 5-5'
+            })
+    
+    # Apply service impacts to phase
+    phase_rank = {'RECALL': 6, 'HOLD': 5, 'IFR': 4, 'VFR': 3, 'FS VFR': 2, 'RESTRICTED': 1, 'UNRESTRICTED': 0}
+    for impact in service_impacts:
+        if impact['phase_impact']:
+            impact_rank = phase_rank.get(impact['phase_impact'], 0)
+            current_rank = phase_rank.get(phase_result['phase'], 0)
+            
+            if impact['phase_impact'] in ('HOLD', 'RECALL') and impact_rank > current_rank:
+                phase_result['phase'] = impact['phase_impact']
+                phase_result['reasons'].append(
+                    f"⚠️ {impact['service']} unavailable — {impact['action']} ({impact['ref']})"
+                )
+                phase_result['restrictions'] = {
+                    'solo_cadets': False, 'first_solo': False,
+                    'note': f"{impact['service']} unavailable"
+                }
+            elif impact['phase_impact'] == 'VFR':
+                # Cap at VFR (same as bird activity logic)
+                solo_phases = ['UNRESTRICTED', 'RESTRICTED', 'FS VFR']
+                if phase_result['phase'] in solo_phases:
+                    phase_result['phase'] = 'VFR'
+                    phase_result['restrictions'] = {
+                        'solo_cadets': False, 'first_solo': False,
+                        'solo_note': f'{impact["service"]} — {impact["action"]}'
+                    }
+                # Always kill solo regardless of current phase
+                phase_result['restrictions']['solo_cadets'] = False
+                phase_result['restrictions']['first_solo'] = False
+            
+            warnings.append(f"🔧 {impact['service']}: {impact['action']} ({impact['ref']})")
+        else:
+            # Operational restriction only (e.g. MoCO)
+            warnings.append(f"🔧 {impact['service']}: {impact['action']} ({impact['ref']})")
+    
+    # Stash service impacts on phase_result for display
+    if service_impacts:
+        phase_result['_service_impacts'] = service_impacts
     
     # Warning text is shown in warnings list (already parsed by pipeline)
     if args.warning:
