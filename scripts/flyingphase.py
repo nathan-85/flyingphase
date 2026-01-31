@@ -1566,8 +1566,8 @@ def format_output(phase_result: dict, metar: METARParser, runway: str,
         orig = phase_result['metar_original']
         cond_final = phase_result['conditions']
         
-        output.append("📋 Phase Determination Inputs:")
-        output.append("  ┌─ METAR observation (raw):")
+        output.append("📋 Phase Determination Inputs (METAR only):")
+        output.append("  ┌─ METAR observation (used for phase):")
         
         # Visibility
         orig_vis_str = f"{orig['visibility_km']:.1f}km" if orig['visibility_km'] else "N/A"
@@ -1614,41 +1614,13 @@ def format_output(phase_result: dict, metar: METARParser, runway: str,
         
         output.append("  │")
         
-        # TAF overlay
+        # TAF forecast (for alternate assessment, NOT phase)
         if phase_result.get('taf_overlay'):
-            output.append("  ├─ TAF +30min overlay (worst-case):")
+            output.append("  └─ TAF forecast (for alternate assessment only):")
             for factor in phase_result['taf_overlay']:
-                output.append(f"  │    • {factor}")
-            output.append("  │")
+                output.append(f"       • {factor}")
         else:
-            output.append("  ├─ TAF overlay: none (no TAF or no worse conditions)")
-            output.append("  │")
-        
-        # Combined final values
-        output.append("  └─ Combined (used for phase):")
-        final_vis_str = f"{cond_final['visibility_km']:.1f}km" if cond_final['visibility_km'] else "N/A"
-        
-        if cond_final.get('cavok'):
-            final_cloud_str = "CAVOK"
-        elif not cond_final['clouds']:
-            final_cloud_str = "NSC/SKC"
-        else:
-            parts = []
-            for c in cond_final['clouds']:
-                s = f"{c['coverage']}{c['height_ft']//100:03d}"
-                if c.get('type'):
-                    s += c['type']
-                parts.append(s)
-            final_cloud_str = " ".join(parts)
-        
-        if cond_final['wind_dir'] is not None:
-            final_wind_str = f"{cond_final['wind_dir']:03d}°/{cond_final['wind_speed']}kt"
-        else:
-            final_wind_str = f"VRB/{cond_final['wind_speed']}kt"
-        if cond_final['wind_gust']:
-            final_wind_str += f" G{cond_final['wind_gust']}"
-        
-        output.append(f"       Vis: {final_vis_str} | Cloud: {final_cloud_str} | Wind: {final_wind_str}")
+            output.append("  └─ TAF: none provided (alternates use OEKF wind estimate)")
         output.append("")
     
     # Conditions
@@ -1686,9 +1658,9 @@ def format_output(phase_result: dict, metar: METARParser, runway: str,
     if cond['temp'] is not None:
         output.append(f"  Temp: {cond['temp']}°C")
     
-    # TAF planning window overlay
+    # TAF forecast (does not affect phase, shown for awareness)
     if phase_result.get('taf_overlay'):
-        output.append(f"  📅 TAF +30min overlay:")
+        output.append(f"  📅 TAF forecast (alternate assessment only):")
         for factor in phase_result['taf_overlay']:
             output.append(f"    • {factor}")
     
@@ -2030,7 +2002,7 @@ def main():
     else:
         runway, runway_heading = select_runway(metar, airfield_data, 'OEKF')
     
-    # Snapshot raw METAR observation before TAF overlay (for verbose output)
+    # Snapshot raw METAR observation (for verbose output)
     metar_original = {
         'visibility_m': metar.visibility_m,
         'visibility_km': metar.visibility_m / 1000 if metar.visibility_m else None,
@@ -2045,30 +2017,28 @@ def main():
         'qnh': metar.qnh,
     }
     
-    # Apply TAF planning window overlay (worst-case next 30 min)
+    # --- PHASE DETERMINATION: METAR + Warnings + Notes (NOT TAF) ---
+    # Phase reflects CURRENT conditions only. TAF is used for alternate assessment.
+    phase_result = determine_phase(metar, runway_heading, airfield_data)
+    
+    # Store original METAR for verbose output
+    phase_result['metar_original'] = metar_original
+    
+    # --- TAF OVERLAY: for alternate assessment and display only ---
+    # TAF does NOT affect phase determination.
     taf_overlay_factors = []
     if taf and metar.obs_hour is not None:
         taf_window = taf.get_planning_window(
             metar.obs_hour, metar.obs_minute or 0, window_min=30
         )
         taf_overlay_factors = metar.apply_taf_overlay(taf_window)
-        # Also capture the TAF factor descriptions for output
         taf_overlay_factors.extend(taf_window.get('factors', []))
-        # Re-select runway if wind changed from TAF overlay
-        if not args.runway and any('Wind' in f for f in taf_overlay_factors):
-            runway, runway_heading = select_runway(metar, airfield_data, 'OEKF')
     
-    # Determine phase (now uses METAR + TAF worst-case overlay)
-    phase_result = determine_phase(metar, runway_heading, airfield_data)
-    
-    # Tag overlay factors onto the phase result for output
+    # Tag TAF overlay info onto phase_result for display context
     if taf_overlay_factors:
         phase_result['taf_overlay'] = taf_overlay_factors
     
-    # Store original METAR for verbose output
-    phase_result['metar_original'] = metar_original
-    
-    # Check if alternate required (conditions already reflect TAF overlay)
+    # Check if alternate required (from METAR conditions + TAF forecast)
     alternate_required = False
     warnings = []
     
