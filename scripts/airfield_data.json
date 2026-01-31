@@ -20,7 +20,7 @@
     "OEKF": {
       "name": "King Faisal Air Academy",
       "type": "military",
-      "elevation_ft": 2070,
+      "elevation_ft": 2400,
       "mag_var": "4\u00b0E",
       "mag_var_degrees": 4,
       "runways": [

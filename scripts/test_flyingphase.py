@@ -371,8 +371,8 @@ class TestPhaseDetermination(unittest.TestCase):
         self.assertNotEqual(phase, "UNRESTRICTED")
 
     def test_unrestricted_few070_above_amsl_threshold(self):
-        """FEW at 7000ft AGL = 9070ft AMSL → above 8000ft AMSL threshold → UNRESTRICTED.
-        (Phase table thresholds are AMSL; FEW070 AGL at OEKF 2070ft = 9070ft AMSL > 8000ft)."""
+        """FEW at 7000ft AGL = 9400ft AMSL → above 8000ft AMSL threshold → UNRESTRICTED.
+        (Phase table thresholds are AMSL; FEW070 AGL at OEKF 2400ft = 9400ft AMSL > 8000ft)."""
         phase = self._phase("OEKF 310600Z 33008KT 9999 FEW070 22/10 Q1018")
         self.assertEqual(phase, "UNRESTRICTED")
 
@@ -383,7 +383,7 @@ class TestPhaseDetermination(unittest.TestCase):
 
     # === VFR boundaries ===
     def test_vfr_standard_now_fs_vfr(self):
-        """SCT040 = 4000ft AGL = 6070ft AMSL. Above FS VFR 5000ft AMSL (2930ft AGL).
+        """SCT040 = 4000ft AGL = 6400ft AMSL. Above FS VFR 5000ft AMSL (2600ft AGL).
         Vis 7km < 8km fails RESTRICTED vis. → FS VFR."""
         self.assertEqual(
             self._phase("OEKF 310600Z 33012KT 7000 SCT040 22/10 Q1018"),
@@ -404,7 +404,7 @@ class TestPhaseDetermination(unittest.TestCase):
         self.assertIn(phase, ["IFR", "HOLD"])
 
     def test_vfr_vis_at_5km_now_fs_vfr(self):
-        """Vis 5000m, SCT040 (4000ft AGL = 6070ft AMSL) above FS VFR threshold → FS VFR."""
+        """Vis 5000m, SCT040 (4000ft AGL = 6400ft AMSL) above FS VFR threshold → FS VFR."""
         self.assertEqual(
             self._phase("OEKF 310600Z 33012KT 5000 SCT040 22/10 Q1018"),
             "FS VFR"
@@ -491,7 +491,7 @@ class TestAMSLCloudThresholds(unittest.TestCase):
         if 'airfields' in cls.airfield_data:
             for icao, af_data in cls.airfield_data['airfields'].items():
                 cls.airfield_data[icao] = af_data
-        cls.oekf_elev = cls.airfield_data.get('OEKF', {}).get('elevation_ft', 2070)
+        cls.oekf_elev = cls.airfield_data.get('OEKF', {}).get('elevation_ft', 2400)
 
     def _phase(self, metar_str, rwy_hdg=330, pirep_str=None):
         m, resolved = _metar_to_resolved(metar_str, pirep_str=pirep_str,
@@ -501,17 +501,17 @@ class TestAMSLCloudThresholds(unittest.TestCase):
         return result
 
     def test_cavok_is_restricted_not_unrestricted(self):
-        """CAVOK guarantees clear below 5000ft AGL (7070ft AMSL at OEKF).
-        UNRESTRICTED needs no cloud below 8000ft AMSL = 5930ft AGL.
+        """CAVOK guarantees clear below 5000ft AGL (7400ft AMSL at OEKF).
+        UNRESTRICTED needs no cloud below 8000ft AMSL = 5600ft AGL.
         CAVOK cannot satisfy this → RESTRICTED."""
         result = self._phase("OEKF 310600Z 32012KT CAVOK 15/M01 Q998")
         self.assertEqual(result['phase'], 'RESTRICTED')
         self.assertTrue(result['restrictions'].get('solo_cadets'))
 
     def test_cavok_plus_pirep_few050_is_fs_vfr(self):
-        """CAVOK + PIREP FEW050 (5000ft AMSL = 2930ft AGL at OEKF).
-        FS VFR needs no cloud below 5000ft AMSL = 2930ft AGL.
-        FEW at 2930ft AGL is AT threshold (not below) → FS VFR."""
+        """CAVOK + PIREP FEW050 (5000ft AMSL = 2600ft AGL at OEKF).
+        FS VFR needs no cloud below 5000ft AMSL = 2600ft AGL.
+        FEW at 2600ft AGL is AT threshold (not below) → FS VFR."""
         result = self._phase(
             "OEKF 310600Z VRB04KT CAVOK 15/M01 Q998",
             pirep_str="UA /OV OEKF /FL050 /SK FEW050 /FV 9999"
@@ -520,20 +520,20 @@ class TestAMSLCloudThresholds(unittest.TestCase):
         self.assertTrue(result['restrictions'].get('first_solo'))
 
     def test_cavok_satisfies_restricted(self):
-        """CAVOK guarantees clear below 5000ft AGL > 3930ft AGL (6000ft AMSL).
+        """CAVOK guarantees clear below 5000ft AGL > 3600ft AGL (6000ft AMSL).
         RESTRICTED satisfied."""
         result = self._phase("OEKF 310600Z 33008KT CAVOK 22/10 Q1018")
         self.assertEqual(result['phase'], 'RESTRICTED')
 
     def test_cavok_satisfies_fs_vfr(self):
-        """CAVOK guarantees clear below 5000ft AGL > 2930ft AGL (5000ft AMSL).
+        """CAVOK guarantees clear below 5000ft AGL > 2600ft AGL (5000ft AMSL).
         FS VFR satisfied (wind permitting)."""
         result = self._phase("OEKF 310600Z 33008KT CAVOK 22/10 Q1018")
         # With 8kt wind, should be RESTRICTED (CAVOK + calm winds)
         self.assertIn(result['phase'], ['RESTRICTED', 'FS VFR'])
 
     def test_pirep_cloud_below_fs_vfr_threshold(self):
-        """PIREP FEW040 (4000ft AMSL = 1930ft AGL) → below FS VFR 2930ft AGL → VFR."""
+        """PIREP FEW040 (4000ft AMSL = 1600ft AGL) → below FS VFR 2600ft AGL → VFR."""
         result = self._phase(
             "OEKF 310600Z 33008KT CAVOK 22/10 Q1018",
             pirep_str="UA /OV OEKF /FL040 /SK FEW040"
@@ -541,13 +541,13 @@ class TestAMSLCloudThresholds(unittest.TestCase):
         self.assertEqual(result['phase'], 'VFR')
 
     def test_metar_cloud_agl_vs_amsl_threshold(self):
-        """METAR FEW050 = 5000ft AGL = 7070ft AMSL. Below 8000ft AMSL threshold.
+        """METAR FEW050 = 5000ft AGL = 7400ft AMSL. Below 8000ft AMSL threshold.
         UNRESTRICTED fails, should be RESTRICTED."""
         result = self._phase("OEKF 310600Z 33008KT 9999 FEW050 22/10 Q1018")
         self.assertEqual(result['phase'], 'RESTRICTED')
 
     def test_metar_few080_still_unrestricted(self):
-        """METAR FEW080 = 8000ft AGL = 10070ft AMSL. Above 8000ft AMSL.
+        """METAR FEW080 = 8000ft AGL = 10400ft AMSL. Above 8000ft AMSL.
         Only FEW above threshold → UNRESTRICTED."""
         result = self._phase("OEKF 310600Z 33008KT 9999 FEW080 22/10 Q1018")
         self.assertEqual(result['phase'], 'UNRESTRICTED')
