@@ -57,8 +57,6 @@ class METARParser:
     def validate(self) -> List[str]:
         """Check for missing critical fields and return list of issues."""
         issues = []
-        if not self.icao:
-            issues.append("❌ ICAO code not found — expected 4-letter code (e.g. OEKF)")
         if self.wind_speed is None:
             issues.append("❌ Wind group not found — expected format like 33012KT or VRB03KT")
         if self.visibility_m is None and not self.cavok:
@@ -66,8 +64,6 @@ class METARParser:
         has_sky_code = any(code in self.raw.upper() for code in ['NSC', 'SKC', 'NCD', 'CLR'])
         if not self.clouds and not self.cavok and not has_sky_code:
             issues.append("⚠️ No cloud groups found — expected format like FEW040, SCT080, BKN015, OVC003")
-        if self.qnh is None:
-            issues.append("⚠️ QNH not found — expected Q1013 or A2992")
         if self.temp is None:
             issues.append("⚠️ Temperature not found — expected format like 22/10 or M02/M05")
         # Add any parse warnings
@@ -90,6 +86,10 @@ class METARParser:
                 idx = i + 1
                 break
         
+        # Default to OEKF if no station code found (tool is OEKF-specific)
+        if not self.icao:
+            self.icao = 'OEKF'
+        
         # Date/time (DDHHmmZ)
         self.obs_day = None
         self.obs_hour = None
@@ -99,6 +99,14 @@ class METARParser:
             self.obs_hour = int(parts[idx][2:4])
             self.obs_minute = int(parts[idx][4:6])
             idx += 1
+        
+        # Default to current UTC if no timestamp (METAR assumed current)
+        if self.obs_hour is None:
+            from datetime import datetime as _dt, timezone as _tz
+            _now = _dt.now(_tz.utc)
+            self.obs_day = _now.day
+            self.obs_hour = _now.hour
+            self.obs_minute = _now.minute
         
         # Skip AUTO or COR if present
         if idx < len(parts) and parts[idx] in ('AUTO', 'COR'):
@@ -665,7 +673,7 @@ class TAFParser:
                         overrides['factors'].append(f'{period_type}: vis {p_vis}m')
             
             # Wind: take highest effective (gust or sustained)
-            p_wind_eff = period.get('wind_gust') or period.get('wind_speed', 0)
+            p_wind_eff = period.get('wind_gust') or period.get('wind_speed') or 0
             current_eff = overrides['wind_gust'] or overrides['wind_speed'] or 0
             if p_wind_eff > current_eff:
                 overrides['wind_dir'] = period.get('wind_dir', overrides['wind_dir'])
