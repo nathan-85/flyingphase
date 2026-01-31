@@ -18,6 +18,21 @@ from flyingphase import (
     METARParser, TAFParser,
     calculate_wind_components, determine_phase, select_runway
 )
+from weather_elements import (
+    WeatherCollection, parse_metar_elements, parse_warning_elements,
+    PHASE_SOURCES
+)
+
+
+def _metar_to_resolved(metar_str, warning=None):
+    """Helper: parse METAR (+ optional warning) → resolved dict for determine_phase."""
+    m = METARParser(metar_str)
+    coll = WeatherCollection()
+    coll.add_all(parse_metar_elements(m))
+    if warning:
+        coll.add_all(parse_warning_elements(warning))
+    resolved = coll.resolve()
+    return m, resolved
 
 
 class TestMETARParserStandard(unittest.TestCase):
@@ -330,8 +345,8 @@ class TestPhaseDetermination(unittest.TestCase):
                 fuel['track_deg'] = fuel.pop('bearing')
 
     def _phase(self, metar_str, rwy_hdg=330):
-        m = METARParser(metar_str)
-        result = determine_phase(m, rwy_hdg, self.airfield_data)
+        m, resolved = _metar_to_resolved(metar_str)
+        result = determine_phase(resolved, rwy_hdg, self.airfield_data, temp=m.temp)
         return result['phase']
 
     # === UNRESTRICTED boundaries ===
@@ -607,8 +622,8 @@ class TestBirdLevelPhaseCapping(unittest.TestCase):
 
     def test_bird_moderate_caps_unrestricted(self):
         """UNRESTRICTED weather + moderate birds → VFR cap."""
-        m = METARParser("OEKF 310600Z 33008KT 9999 FEW080 22/10 Q1018")
-        result = determine_phase(m, 330, self.airfield_data)
+        m, resolved = _metar_to_resolved("OEKF 310600Z 33008KT 9999 FEW080 22/10 Q1018")
+        result = determine_phase(resolved, 330, self.airfield_data, temp=m.temp)
         self.assertEqual(result['phase'], "UNRESTRICTED")
         # Now simulate bird capping (as done in main())
         bird_level = 'MODERATE'
@@ -619,14 +634,14 @@ class TestBirdLevelPhaseCapping(unittest.TestCase):
 
     def test_bird_low_no_cap(self):
         """UNRESTRICTED weather + low birds → stays UNRESTRICTED."""
-        m = METARParser("OEKF 310600Z 33008KT 9999 FEW080 22/10 Q1018")
-        result = determine_phase(m, 330, self.airfield_data)
+        m, resolved = _metar_to_resolved("OEKF 310600Z 33008KT 9999 FEW080 22/10 Q1018")
+        result = determine_phase(resolved, 330, self.airfield_data, temp=m.temp)
         self.assertEqual(result['phase'], "UNRESTRICTED")
 
     def test_bird_severe_caps_unrestricted(self):
         """UNRESTRICTED weather + severe birds → VFR cap."""
-        m = METARParser("OEKF 310600Z 33008KT 9999 FEW080 22/10 Q1018")
-        result = determine_phase(m, 330, self.airfield_data)
+        m, resolved = _metar_to_resolved("OEKF 310600Z 33008KT 9999 FEW080 22/10 Q1018")
+        result = determine_phase(resolved, 330, self.airfield_data, temp=m.temp)
         solo_phases = ['UNRESTRICTED', 'RESTRICTED', 'FS VFR']
         if result['phase'] in solo_phases:
             result['phase'] = 'VFR'
@@ -634,8 +649,8 @@ class TestBirdLevelPhaseCapping(unittest.TestCase):
 
     def test_bird_moderate_vfr_unchanged(self):
         """VFR weather + moderate birds → stays VFR (already below solo phases)."""
-        m = METARParser("OEKF 310600Z 33012KT 7000 SCT040 22/10 Q1018")
-        result = determine_phase(m, 330, self.airfield_data)
+        m, resolved = _metar_to_resolved("OEKF 310600Z 33012KT 7000 SCT040 22/10 Q1018")
+        result = determine_phase(resolved, 330, self.airfield_data, temp=m.temp)
         self.assertEqual(result['phase'], 'VFR')
         solo_phases = ['UNRESTRICTED', 'RESTRICTED', 'FS VFR']
         if result['phase'] in solo_phases:
@@ -972,49 +987,18 @@ class TestWarningPhaseImpact(unittest.TestCase):
             self.airfield_data[icao] = info
 
     def run_with_warning(self, metar_str, warning):
-        """Helper: determine phase then apply warning override."""
-        import re
-        metar = METARParser(metar_str)
-        runway_heading = 330  # 33R
-        result = determine_phase(metar, runway_heading, self.airfield_data)
-        warn_upper = warning.upper()
-
-        # Replicate warning parsing from main()
-        warn_vis_m = None
-        vis_patterns = [
-            r'VIS(?:IBILITY)?\s+(?:BELOW\s+|<\s*|OF\s+)?(\d+)\s*(?:M(?:ETERS?)?|OR\s+LESS)',
-            r'VIS(?:IBILITY)?\s+(?:BELOW\s+|<\s*|OF\s+)?(\d+(?:\.\d+)?)\s*KM',
-            r'VIS(?:IBILITY)?\s+(\d+)\b',
-        ]
-        for vp in vis_patterns:
-            vm = re.search(vp, warn_upper)
-            if vm:
-                val = float(vm.group(1))
-                if val < 100:
-                    val = val * 1000
-                warn_vis_m = val
-                break
-
-        phase_rank = {'RECALL': 6, 'HOLD': 5, 'IFR': 4, 'VFR': 3, 'FS VFR': 2, 'RESTRICTED': 1, 'UNRESTRICTED': 0}
-        current_rank = phase_rank.get(result['phase'], 0)
-
-        if warn_vis_m is not None:
-            if warn_vis_m < 2400 and phase_rank['HOLD'] > current_rank:
-                result['phase'] = 'HOLD'
-            elif warn_vis_m < 5000 and phase_rank['IFR'] > current_rank:
-                result['phase'] = 'IFR'
-            elif warn_vis_m < 8000 and phase_rank['VFR'] > current_rank:
-                result['phase'] = 'VFR'
-
+        """Helper: determine phase using pipeline (METAR + WARNING → resolved)."""
+        m, resolved = _metar_to_resolved(metar_str, warning=warning)
+        result = determine_phase(resolved, 330, self.airfield_data, temp=m.temp)
         return result
 
-    def test_vis_2000_warning_forces_hold(self):
-        """Warning 'visibility 2000 or less' should force HOLD."""
+    def test_vis_2000_warning_forces_ifr(self):
+        """Warning 'visibility 2000 or less' → IFR (2000m > IFR minimum ~800m)."""
         result = self.run_with_warning(
             "OEKF 311300Z 33012KT 9999 SKC 22/10 Q1018",
             "visibility 2000 or less"
         )
-        self.assertEqual(result['phase'], 'HOLD')
+        self.assertEqual(result['phase'], 'IFR')
 
     def test_vis_3000_warning_forces_ifr(self):
         """Warning 'visibility 3000' should force IFR."""
@@ -1024,13 +1008,13 @@ class TestWarningPhaseImpact(unittest.TestCase):
         )
         self.assertEqual(result['phase'], 'IFR')
 
-    def test_vis_6000_warning_caps_vfr(self):
-        """Warning 'visibility 6000' on UNRESTRICTED METAR → VFR."""
+    def test_vis_6000_warning_caps_fs_vfr(self):
+        """Warning 'visibility 6000' on clear sky METAR → FS VFR (6km > 5km, no cloud)."""
         result = self.run_with_warning(
             "OEKF 311300Z 33012KT 9999 SKC 22/10 Q1018",
             "visibility 6000"
         )
-        self.assertEqual(result['phase'], 'VFR')
+        self.assertEqual(result['phase'], 'FS VFR')
 
     def test_warning_doesnt_improve_phase(self):
         """Warning with higher vis than METAR shouldn't improve phase."""

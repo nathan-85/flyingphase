@@ -156,6 +156,12 @@ class WeatherCollection:
 
         result['clouds'] = sorted(by_height.values(), key=lambda c: c['height_ft'])
 
+        # CB from cloud layers
+        for c in result['clouds']:
+            if c.get('cb'):
+                result['has_cb'] = True
+                break
+
         # --- Weather: union of all codes ---
         weather_elements = [el for el in self.elements if el.type == 'weather']
         for el in weather_elements:

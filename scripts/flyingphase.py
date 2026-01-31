@@ -903,9 +903,17 @@ def calculate_wind_components(wind_dir: int, wind_speed: int, runway_heading: in
     return crosswind, headwind
 
 
-def determine_phase(metar: METARParser, runway_heading: int, airfield_data: dict) -> dict:
+def determine_phase(resolved: dict, runway_heading: int, airfield_data: dict,
+                    temp: int = None) -> dict:
     """
-    Determine flying phase based on METAR and LOP Table 5-4.
+    Determine flying phase from resolved weather conditions (LOP Table 5-4).
+    
+    Args:
+        resolved: Output of WeatherCollection.resolve() — worst-case conditions
+                  from METAR + WARNING + PIREP sources.
+        runway_heading: Active runway heading in degrees.
+        airfield_data: Airfield configuration dict.
+        temp: Temperature in °C (display-only, used for >50°C HOLD check).
     
     Returns dict with phase, restrictions, conditions, and check results.
     """
@@ -914,72 +922,91 @@ def determine_phase(metar: METARParser, runway_heading: int, airfield_data: dict
         'conditions': {},
         'restrictions': {},
         'reasons': [],
-        'checks': {}  # Pass/fail for each phase
+        'checks': {}
     }
     
-    # Get wind components
-    effective_wind = metar.get_effective_wind_speed()
+    # Extract from resolved dict
+    vis_m = resolved.get('visibility_m')
+    clouds = resolved.get('clouds', [])
+    wind = resolved.get('wind')
+    has_cb = resolved.get('has_cb', False)
+    weather_codes = resolved.get('weather', set())
     
-    if metar.wind_dir is not None:
-        crosswind, headwind = calculate_wind_components(
-            metar.wind_dir, effective_wind, runway_heading
-        )
+    # Wind components
+    if wind:
+        wind_dir = wind.get('direction')
+        wind_speed = wind.get('speed', 0)
+        wind_gust = wind.get('gust')
+        effective_wind = wind_gust if wind_gust else wind_speed
+        
+        if wind_dir is not None:
+            crosswind, headwind = calculate_wind_components(
+                wind_dir, effective_wind, runway_heading
+            )
+        else:
+            crosswind = effective_wind
+            headwind = 0
     else:
-        # Variable wind - assume worst case (all crosswind)
-        crosswind = effective_wind
+        wind_dir = None
+        wind_speed = 0
+        wind_gust = None
+        effective_wind = 0
+        crosswind = 0
         headwind = 0
     
     tailwind = abs(headwind) if headwind < 0 else 0
     headwind_component = headwind if headwind > 0 else 0
     
+    # Cloud helpers
+    ceiling = None
+    lowest_cloud = None
+    for c in clouds:
+        h = c['height_ft']
+        if lowest_cloud is None or h < lowest_cloud:
+            lowest_cloud = h
+        if c['coverage'] in ('BKN', 'OVC') and (ceiling is None or h < ceiling):
+            ceiling = h
+    
+    vis_km = vis_m / 1000 if vis_m else None
+    
+    # Has TS in weather codes
+    has_ts = any(code == 'TS' or code.startswith('TS') for code in weather_codes)
+    
     result['conditions'] = {
-        'visibility_m': metar.visibility_m,
-        'visibility_km': metar.visibility_m / 1000 if metar.visibility_m else None,
-        'ceiling_ft': metar.get_ceiling_ft(),
-        'lowest_cloud_ft': metar.get_lowest_cloud_ft(),
-        'clouds': metar.clouds,
-        'wind_dir': metar.wind_dir,
-        'wind_speed': metar.wind_speed,
-        'wind_gust': metar.wind_gust,
+        'visibility_m': vis_m,
+        'visibility_km': vis_km,
+        'ceiling_ft': ceiling,
+        'lowest_cloud_ft': lowest_cloud,
+        'clouds': clouds,
+        'wind_dir': wind_dir,
+        'wind_speed': wind_speed,
+        'wind_gust': wind_gust,
         'effective_wind': effective_wind,
         'crosswind': round(crosswind, 1),
         'headwind': round(headwind_component, 1),
         'tailwind': round(tailwind, 1),
-        'temp': metar.temp,
-        'cavok': metar.cavok,
-        'has_cb': metar.has_cb(),
-        'has_ts': metar.has_ts_weather,
-        'cb_details': metar.cb_details,
-        'cb_warnings': metar.get_cb_warnings()
+        'temp': temp,
+        'cavok': vis_m == 10000 and not clouds,
+        'has_cb': has_cb,
+        'has_ts': has_ts,
+        'weather': weather_codes,
     }
     
-    vis_km = result['conditions']['visibility_km']
-    ceiling = result['conditions']['ceiling_ft']
-    lowest_cloud = result['conditions']['lowest_cloud_ft']
-    
-    # Check RECALL conditions first (most restrictive)
-    recall_checks = []
-    
+    # --- RECALL (most restrictive) ---
     if effective_wind > 35:
         result['phase'] = 'RECALL'
         result['reasons'].append(f'⚠️ Wind exceeds limits ({effective_wind}kt > 35kt)')
         return result
     
-    if metar.has_cb_within_nm(30):
+    if has_cb:
         result['phase'] = 'RECALL'
-        cb_warnings = metar.get_cb_warnings()
-        if cb_warnings:
-            result['reasons'].append(f'⚠️ CB within 30NM: {"; ".join(cb_warnings)}')
-        else:
-            result['reasons'].append('⚠️ CB (cumulonimbus) present')
+        result['reasons'].append('⚠️ CB (cumulonimbus) present')
         return result
     
-    # Check HOLD conditions
-    hold_checks = []
-    
-    if metar.temp and metar.temp > 50:
+    # --- HOLD ---
+    if temp is not None and temp > 50:
         result['phase'] = 'HOLD'
-        result['reasons'].append(f'🌡️ Temperature exceeds 50°C ({metar.temp}°C)')
+        result['reasons'].append(f'🌡️ Temperature exceeds 50°C ({temp}°C)')
         return result
     
     if crosswind > 24:
@@ -987,17 +1014,15 @@ def determine_phase(metar: METARParser, runway_heading: int, airfield_data: dict
         result['reasons'].append(f'💨 Crosswind exceeds 24kt ({crosswind:.1f}kt)')
         return result
     
-    # Check each phase from most permissive to most restrictive
+    # --- Phase checks (most permissive → most restrictive) ---
     
     # UNRESTRICTED: No cloud of ANY type below 8000ft. Above 8000ft, only FEW allowed.
     unrestricted_checks = []
-    
-    unrestricted_checks.append(('Vis ≥ 8km', vis_km and vis_km >= 8))
+    unrestricted_checks.append(('Vis ≥ 8km', vis_km is not None and vis_km >= 8))
     unrestricted_checks.append(('No cloud < 8000ft', lowest_cloud is None or lowest_cloud >= 8000))
     
-    # Check for cloud coverage above 8000ft
     no_sct_bkn_ovc = True
-    for cloud in metar.clouds:
+    for cloud in clouds:
         if cloud['height_ft'] < 8000:
             no_sct_bkn_ovc = False
             break
@@ -1009,26 +1034,20 @@ def determine_phase(metar: METARParser, runway_heading: int, airfield_data: dict
     unrestricted_checks.append(('Total wind ≤ 25kt', effective_wind <= 25))
     unrestricted_checks.append(('Crosswind ≤ 15kt', crosswind <= 15))
     unrestricted_checks.append(('Tailwind ≤ 5kt', tailwind <= 5))
-    
     result['checks']['UNRESTRICTED'] = unrestricted_checks
     
     if all(check[1] for check in unrestricted_checks):
         result['phase'] = 'UNRESTRICTED'
-        result['restrictions'] = {
-            'solo_cadets': True,
-            'first_solo': True
-        }
+        result['restrictions'] = {'solo_cadets': True, 'first_solo': True}
         return result
     
     # RESTRICTED: No cloud of ANY type below 6000ft. Max SCT above 6000ft.
     restricted_checks = []
-    
-    restricted_checks.append(('Vis ≥ 8km', vis_km and vis_km >= 8))
+    restricted_checks.append(('Vis ≥ 8km', vis_km is not None and vis_km >= 8))
     restricted_checks.append(('No cloud < 6000ft', lowest_cloud is None or lowest_cloud >= 6000))
     
-    # Check for BKN/OVC above 6000ft
     no_bkn_ovc = True
-    for cloud in metar.clouds:
+    for cloud in clouds:
         if cloud['height_ft'] < 6000:
             no_bkn_ovc = False
             break
@@ -1040,67 +1059,47 @@ def determine_phase(metar: METARParser, runway_heading: int, airfield_data: dict
     restricted_checks.append(('Total wind ≤ 25kt', effective_wind <= 25))
     restricted_checks.append(('Crosswind ≤ 15kt', crosswind <= 15))
     restricted_checks.append(('Tailwind ≤ 5kt', tailwind <= 5))
-    
     result['checks']['RESTRICTED'] = restricted_checks
     
     if all(check[1] for check in restricted_checks):
         result['phase'] = 'RESTRICTED'
-        result['restrictions'] = {
-            'solo_cadets': True,
-            'solo_note': 'Post-IIC only',
-            'first_solo': True
-        }
+        result['restrictions'] = {'solo_cadets': True, 'solo_note': 'Post-IIC only', 'first_solo': True}
         return result
     
     # FS VFR: No cloud of ANY type below 5000ft
     fs_vfr_checks = []
-    
-    fs_vfr_checks.append(('Vis ≥ 5km', vis_km and vis_km >= 5))
+    fs_vfr_checks.append(('Vis ≥ 5km', vis_km is not None and vis_km >= 5))
     fs_vfr_checks.append(('No cloud < 5000ft', lowest_cloud is None or lowest_cloud >= 5000))
     fs_vfr_checks.append(('Total wind ≤ 25kt', effective_wind <= 25))
     fs_vfr_checks.append(('Crosswind ≤ 15kt', crosswind <= 15))
     fs_vfr_checks.append(('Tailwind ≤ 5kt', tailwind <= 5))
-    
     result['checks']['FS VFR'] = fs_vfr_checks
     
     if all(check[1] for check in fs_vfr_checks):
         result['phase'] = 'FS VFR'
-        result['restrictions'] = {
-            'solo_cadets': False,
-            'solo_note': 'Not authorized',
-            'first_solo': True
-        }
+        result['restrictions'] = {'solo_cadets': False, 'solo_note': 'Not authorized', 'first_solo': True}
         return result
     
-    # VFR: Ceiling ≥ 1500ft (for 1000ft vertical clearance), Vis ≥ 5km
+    # VFR: Ceiling ≥ 1500ft, Vis ≥ 5km
     vfr_checks = []
-    
-    vfr_checks.append(('Vis ≥ 5km', vis_km and vis_km >= 5))
+    vfr_checks.append(('Vis ≥ 5km', vis_km is not None and vis_km >= 5))
     vfr_checks.append(('Ceiling ≥ 1500ft', ceiling is None or ceiling >= 1500))
     vfr_checks.append(('Total wind ≤ 30kt', effective_wind <= 30))
     vfr_checks.append(('Crosswind ≤ 24kt', crosswind <= 24))
     vfr_checks.append(('Tailwind ≤ 10kt', tailwind <= 10))
-    
     result['checks']['VFR'] = vfr_checks
     
     if all(check[1] for check in vfr_checks):
         result['phase'] = 'VFR'
-        result['restrictions'] = {
-            'solo_cadets': False,
-            'first_solo': False
-        }
+        result['restrictions'] = {'solo_cadets': False, 'first_solo': False}
         return result
     
-    # IFR: Above approach minimums + 300ft ceiling, +buffer visibility
-    # Use OEKF approach data if available, else use placeholder
+    # IFR: Above approach minimums + 300ft ceiling
     approaches = airfield_data.get('OEKF', {}).get('approaches', [])
-    
-    # Use conservative minimums (ILS CAT I equivalent)
-    min_vis_m = 2400  # Conservative (NDB-level)
-    min_ceiling_ft = 500  # 200ft DH + 300ft
+    min_vis_m = 2400
+    min_ceiling_ft = 500
     
     if approaches:
-        # Use best available approach
         for app in approaches:
             app_vis = app['minimums'].get('visibility_m', 800)
             app_ceil = app['minimums'].get('ceiling_ft', 200)
@@ -1108,31 +1107,22 @@ def determine_phase(metar: METARParser, runway_heading: int, airfield_data: dict
             min_ceiling_ft = min(min_ceiling_ft, app_ceil + 300)
     
     ifr_checks = []
-    
-    ifr_checks.append((f'Vis ≥ {min_vis_m}m', metar.visibility_m and metar.visibility_m >= min_vis_m))
+    ifr_checks.append((f'Vis ≥ {min_vis_m}m', vis_m is not None and vis_m >= min_vis_m))
     ifr_checks.append((f'Ceiling ≥ {min_ceiling_ft}ft', ceiling is None or ceiling >= min_ceiling_ft))
     ifr_checks.append(('Total wind ≤ 30kt', effective_wind <= 30))
     ifr_checks.append(('Crosswind ≤ 24kt', crosswind <= 24))
     ifr_checks.append(('Tailwind ≤ 10kt', tailwind <= 10))
-    
     result['checks']['IFR'] = ifr_checks
     
     if all(check[1] for check in ifr_checks):
         result['phase'] = 'IFR'
-        result['restrictions'] = {
-            'solo_cadets': False,
-            'first_solo': False
-        }
+        result['restrictions'] = {'solo_cadets': False, 'first_solo': False}
         return result
     
-    # If we get here, it's HOLD
+    # HOLD
     result['phase'] = 'HOLD'
     result['reasons'] = ['Weather below IFR minimums']
-    result['restrictions'] = {
-        'solo_cadets': False,
-        'first_solo': False,
-        'note': 'Recover only - no takeoffs'
-    }
+    result['restrictions'] = {'solo_cadets': False, 'first_solo': False, 'note': 'Recover only - no takeoffs'}
     
     return result
 
@@ -1567,67 +1557,7 @@ def format_output(phase_result: dict, metar: METARParser, runway: str,
                 output.append(f"    {check_emoji} {check_name}")
         output.append("")
     
-    # Verbose: show all weather inputs for phase determination
-    if verbose and phase_result.get('metar_original'):
-        orig = phase_result['metar_original']
-        cond_final = phase_result['conditions']
-        
-        output.append("📋 Phase Determination Inputs (METAR only):")
-        output.append("  ┌─ METAR observation (used for phase):")
-        
-        # Visibility
-        orig_vis_str = f"{orig['visibility_km']:.1f}km" if orig['visibility_km'] else "N/A"
-        if orig.get('cavok'):
-            orig_vis_str = "CAVOK (≥10km)"
-        output.append(f"  │  Vis: {orig_vis_str}")
-        
-        # Cloud
-        if orig.get('cavok'):
-            orig_cloud_str = "CAVOK"
-        elif not orig['clouds']:
-            orig_cloud_str = "NSC" if 'NSC' in metar.raw.upper() else "SKC"
-        else:
-            parts = []
-            for c in orig['clouds']:
-                s = f"{c['coverage']}{c['height_ft']//100:03d}"
-                if c.get('type'):
-                    s += c['type']
-                parts.append(s)
-            orig_cloud_str = " ".join(parts)
-        output.append(f"  │  Cloud: {orig_cloud_str}")
-        
-        # Wind
-        if orig['wind_dir'] is not None:
-            orig_wind_str = f"{orig['wind_dir']:03d}°/{orig['wind_speed']}kt"
-        else:
-            orig_wind_str = f"VRB/{orig['wind_speed']}kt"
-        if orig['wind_gust']:
-            orig_wind_str += f" G{orig['wind_gust']}"
-        output.append(f"  │  Wind: {orig_wind_str}")
-        
-        # Weather
-        if orig['weather']:
-            output.append(f"  │  Weather: {' '.join(orig['weather'])}")
-        
-        # Temp/QNH
-        extras = []
-        if orig['temp'] is not None:
-            extras.append(f"Temp: {orig['temp']}/{orig['dewpoint']}°C")
-        if orig['qnh'] is not None:
-            extras.append(f"QNH: Q{orig['qnh']}")
-        if extras:
-            output.append(f"  │  {' | '.join(extras)}")
-        
-        output.append("  │")
-        
-        # TAF forecast (for alternate assessment, NOT phase)
-        if phase_result.get('taf_overlay'):
-            output.append("  └─ TAF forecast (for alternate assessment only):")
-            for factor in phase_result['taf_overlay']:
-                output.append(f"       • {factor}")
-        else:
-            output.append("  └─ TAF: none provided (alternates use OEKF wind estimate)")
-        output.append("")
+    # (Old metar_original verbose section removed — pipeline section below replaces it)
     
     # Weather Element Pipeline (verbose)
     if verbose and element_pipeline:
@@ -1707,7 +1637,9 @@ def format_output(phase_result: dict, metar: METARParser, runway: str,
         cloud_parts = []
         for c in cond['clouds']:
             cloud_str_part = f"{c['coverage']}{c['height_ft']//100:03d}"
-            if c.get('type'):
+            if c.get('cb'):
+                cloud_str_part += 'CB'
+            elif c.get('type'):
                 cloud_str_part += c['type']
             cloud_parts.append(cloud_str_part)
         cloud_str = " ".join(cloud_parts)
@@ -1727,12 +1659,6 @@ def format_output(phase_result: dict, metar: METARParser, runway: str,
     
     if cond['temp'] is not None:
         output.append(f"  Temp: {cond['temp']}°C")
-    
-    # TAF forecast (does not affect phase, shown for awareness)
-    if phase_result.get('taf_overlay'):
-        output.append(f"  📅 TAF forecast (alternate assessment only):")
-        for factor in phase_result['taf_overlay']:
-            output.append(f"    • {factor}")
     
     output.append("")
     
@@ -2169,83 +2095,34 @@ def main():
         'local_lookahead': args.local_lookahead,
     }
 
-    # Snapshot raw METAR observation (for verbose output)
-    metar_original = {
-        'visibility_m': metar.visibility_m,
-        'visibility_km': metar.visibility_m / 1000 if metar.visibility_m else None,
-        'clouds': [dict(c) for c in metar.clouds],
-        'wind_dir': metar.wind_dir,
-        'wind_speed': metar.wind_speed,
-        'wind_gust': metar.wind_gust,
-        'cavok': metar.cavok,
-        'weather': list(metar.weather),
-        'temp': metar.temp,
-        'dewpoint': metar.dewpoint,
-        'qnh': metar.qnh,
-    }
+    # --- PHASE DETERMINATION via WeatherElement pipeline ---
+    # phase_resolved already contains worst-case from METAR+WARNING+PIREP
+    phase_result = determine_phase(phase_resolved, runway_heading, airfield_data, temp=metar.temp)
     
-    # --- PHASE DETERMINATION: METAR + Warnings + Notes (NOT TAF) ---
-    # Phase reflects CURRENT conditions only. TAF is used for alternate assessment.
-    phase_result = determine_phase(metar, runway_heading, airfield_data)
-    
-    # Store original METAR for verbose output
-    phase_result['metar_original'] = metar_original
-    
-    # --- TAF OVERLAY: for alternate assessment and display only ---
-    # TAF does NOT affect phase determination.
-    taf_overlay_factors = []
-    if taf and metar.obs_hour is not None:
-        taf_window = taf.get_planning_window(
-            metar.obs_hour, metar.obs_minute or 0, window_min=30
-        )
-        taf_overlay_factors = metar.apply_taf_overlay(taf_window)
-        taf_overlay_factors.extend(taf_window.get('factors', []))
-    
-    # Tag TAF overlay info onto phase_result for display context
-    if taf_overlay_factors:
-        phase_result['taf_overlay'] = taf_overlay_factors
-    
-    # Check if alternate required (from METAR conditions + TAF forecast)
+    # Check if alternate required — using alt_resolved (ALL sources, now→+180min)
     alternate_required = False
     warnings = []
     
-    cond = phase_result['conditions']
+    # Alternate vis/ceiling from the full pipeline (METAR + TAF + WARNING + PIREP)
+    alt_vis_m = alt_resolved.get('visibility_m')
+    alt_vis_km = alt_vis_m / 1000 if alt_vis_m else None
+    alt_ceiling = None
+    for c in alt_resolved.get('clouds', []):
+        if c['coverage'] in ('BKN', 'OVC'):
+            alt_ceiling = c['height_ft']
+            break
     
-    # Alternate required if below VFR minimums OR if forecast deteriorates
-    if cond['visibility_km'] and cond['visibility_km'] < 5:
+    if alt_vis_km is not None and alt_vis_km < 5:
         alternate_required = True
-        warnings.append(f"Visibility below VFR minimums ({cond['visibility_km']}km)")
+        warnings.append(f"Visibility below VFR minimums ({alt_vis_km:.1f}km)")
     
-    if cond['ceiling_ft'] and cond['ceiling_ft'] < 1500:
+    if alt_ceiling is not None and alt_ceiling < 1500:
         alternate_required = True
-        warnings.append(f"Ceiling below VFR minimums ({cond['ceiling_ft']}ft)")
+        warnings.append(f"Ceiling below VFR minimums ({alt_ceiling}ft)")
     
-    # Add CB-specific warnings from METAR
-    cb_warns = cond.get('cb_warnings', [])
-    if cb_warns and phase_result['phase'] != 'RECALL':
-        for cw in cb_warns:
-            warnings.append(f"⛈️ {cw}")
-    
-    # Check TAF for CB in any period
-    if taf:
-        for period_type, period in taf.get_all_periods():
-            if period.get('has_cb') and period_type != 'BASE':
-                # Already added via check_deterioration for TEMPO, but add specific CB warning
-                pass  # Handled below in TAF deterioration check
-    
-    # Check TAF for deterioration
-    if taf:
-        deteriorates, det_reason = taf.check_deterioration()
-        if deteriorates:
-            alternate_required = True
-            warnings.append(f"TAF forecast deterioration: {det_reason}")
-        
-        # Check for CB in TAF
-        for period_type, period in taf.get_all_periods():
-            if period.get('has_cb'):
-                alternate_required = True
-                warnings.append(f"CB forecast in TAF ({period_type})")
-                break
+    if alt_resolved.get('has_cb'):
+        alternate_required = True
+        warnings.append("CB/TS reported")
     
     # Bird-Strike Risk Level (LOP 5-13)
     # UNRESTRICTED and RESTRICTED imply solo cadets — cannot be phased when birds > LOW.
@@ -2294,98 +2171,9 @@ def main():
             phase_result['restrictions']['note'] = 'SEVERE BIRDS: No take-offs. Single aircraft straight-in recovery only.'
             warnings.append(f'🐦 Bird-Strike Risk: SEVERE — NO TAKE-OFFS, straight-in recovery only')
     
-    # Add weather warning — parse and apply to phase determination
+    # Warning text is shown in warnings list (already parsed by pipeline)
     if args.warning:
         warnings.append(f"Weather warning: {args.warning}")
-        warn_upper = args.warning.upper()
-        
-        # CB/TS in warning → RECALL
-        # Use word boundary for TS to avoid false positives (e.g., "gusts" contains "TS")
-        if re.search(r'\bCB\b', warn_upper) or 'THUNDERSTORM' in warn_upper or re.search(r'\bTS\b', warn_upper):
-            alternate_required = True
-            if phase_result['phase'] not in ['RECALL', 'HOLD']:
-                phase_result['phase'] = 'RECALL'
-                phase_result['reasons'].append('⚠️ Warning: CB/TS activity')
-        
-        # Parse visibility from warning text
-        # Patterns: "visibility 2000 or less", "vis below 3000", "vis 1500m", "vis < 5km"
-        warn_vis_m = None
-        vis_patterns = [
-            r'VIS(?:IBILITY)?\s+(?:BELOW\s+|<\s*|OF\s+)?(\d+)\s*(?:M(?:ETERS?)?|OR\s+LESS)',
-            r'VIS(?:IBILITY)?\s+(?:BELOW\s+|<\s*|OF\s+)?(\d+(?:\.\d+)?)\s*KM',
-            r'VIS(?:IBILITY)?\s+(\d+)\b',
-            r'(\d+)\s*(?:M\b|METERS?)\s+(?:OR\s+LESS|VISIBILITY)',
-        ]
-        for vp in vis_patterns:
-            vm = re.search(vp, warn_upper)
-            if vm:
-                val = float(vm.group(1))
-                if 'KM' in (vm.group(0) if hasattr(vm, 'group') else ''):
-                    val = val * 1000
-                # Check if it looks like meters (>= 100) or km (< 100)
-                if val < 100:
-                    val = val * 1000  # Likely km
-                warn_vis_m = val
-                break
-        
-        # Parse wind from warning text
-        # Patterns: "wind 35kt", "gusts 40", "wind exceeding 30"
-        warn_wind = None
-        wind_patterns = [
-            r'(?:WIND|GUST)S?\s+(?:EXCEEDING\s+|ABOVE\s+|>?\s*)(\d+)\s*(?:KT|KNOTS?)?',
-            r'(\d+)\s*(?:KT|KNOTS?)\s+(?:WIND|GUST)',
-        ]
-        for wp in wind_patterns:
-            wm = re.search(wp, warn_upper)
-            if wm:
-                warn_wind = int(wm.group(1))
-                break
-        
-        # Dust/sand storms → assume low visibility
-        if any(x in warn_upper for x in ['DUST STORM', 'SANDSTORM', 'SAND STORM', 'BLDU', 'BLSA', 'DS', 'SS']):
-            if warn_vis_m is None:
-                warn_vis_m = 1000  # Assume poor vis with dust/sand storm warning
-        
-        # Phase hierarchy (most restrictive first): RECALL > HOLD > IFR > VFR > FS VFR > RESTRICTED > UNRESTRICTED
-        phase_rank = {'RECALL': 6, 'HOLD': 5, 'IFR': 4, 'VFR': 3, 'FS VFR': 2, 'RESTRICTED': 1, 'UNRESTRICTED': 0}
-        current_rank = phase_rank.get(phase_result['phase'], 0)
-        
-        # Apply warning visibility to phase
-        if warn_vis_m is not None:
-            if warn_vis_m < 2400:  # Below IFR minimums → HOLD
-                new_rank = phase_rank['HOLD']
-                if new_rank > current_rank:
-                    phase_result['phase'] = 'HOLD'
-                    phase_result['reasons'].append(f'⚠️ Warning: visibility {int(warn_vis_m)}m — below IFR minimums')
-            elif warn_vis_m < 5000:  # Below VFR → IFR
-                new_rank = phase_rank['IFR']
-                if new_rank > current_rank:
-                    phase_result['phase'] = 'IFR'
-                    phase_result['reasons'].append(f'⚠️ Warning: visibility {int(warn_vis_m)}m — IFR conditions')
-                    phase_result['restrictions'] = {'solo_cadets': False, 'first_solo': False}
-            elif warn_vis_m < 8000:  # Below UNRESTRICTED/RESTRICTED → VFR
-                new_rank = phase_rank['VFR']
-                if new_rank > current_rank:
-                    phase_result['phase'] = 'VFR'
-                    phase_result['reasons'].append(f'⚠️ Warning: visibility {int(warn_vis_m)}m — VFR only')
-                    phase_result['restrictions'] = {'solo_cadets': False, 'first_solo': False}
-        
-        # Apply warning wind to phase
-        if warn_wind is not None:
-            if warn_wind > 35:
-                if phase_rank['RECALL'] > current_rank:
-                    phase_result['phase'] = 'RECALL'
-                    phase_result['reasons'].append(f'⚠️ Warning: wind {warn_wind}kt exceeds 35kt')
-            elif warn_wind > 30:
-                if phase_rank['HOLD'] > current_rank:
-                    phase_result['phase'] = 'HOLD'
-                    phase_result['reasons'].append(f'⚠️ Warning: wind {warn_wind}kt exceeds 30kt')
-            elif warn_wind > 25:
-                new_rank = phase_rank['VFR']
-                if new_rank > current_rank:
-                    phase_result['phase'] = 'VFR'
-                    phase_result['reasons'].append(f'⚠️ Warning: wind {warn_wind}kt — VFR only')
-                    phase_result['restrictions'] = {'solo_cadets': False, 'first_solo': False}
     
     # Sortie time window analysis
     sortie_window = None
