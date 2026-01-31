@@ -568,11 +568,15 @@ def parse_warning_elements(warning_text: str) -> List[WeatherElement]:
 
 
 def parse_pirep_elements(pirep_text: str,
-                         report_time: Optional[datetime] = None) -> List[WeatherElement]:
+                         report_time: Optional[datetime] = None,
+                         elevation_ft: int = 0) -> List[WeatherElement]:
     """Parse a PIREP string into WeatherElements.
 
     PIREP format: UA /OV location /FL alt /TP type /SK clouds /WX weather /FV vis
     Elements have source='PIREP', valid_from=report_time, valid_to=None.
+
+    PIREP cloud heights are AMSL. Convert to AGL by subtracting elevation_ft
+    so they're in the same reference as METAR/TAF (AGL).
     """
     elements = []
     if not pirep_text:
@@ -588,9 +592,11 @@ def parse_pirep_elements(pirep_text: str,
     if sk_match:
         for cm in re.finditer(r'(FEW|SCT|BKN|OVC)(\d{3})(CB|TCU)?', sk_match.group(1)):
             cb = cm.group(3) == 'CB' if cm.group(3) else False
+            height_amsl = int(cm.group(2)) * 100
+            height_agl = max(0, height_amsl - elevation_ft)  # PIREP is AMSL → convert to AGL
             elements.append(WeatherElement(
                 type='cloud',
-                value={'coverage': cm.group(1), 'height_ft': int(cm.group(2)) * 100, 'cb': cb},
+                value={'coverage': cm.group(1), 'height_ft': height_agl, 'cb': cb},
                 source='PIREP', valid_from=report_time, valid_to=None,
                 raw=cm.group(0)
             ))

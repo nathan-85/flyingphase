@@ -904,7 +904,7 @@ def calculate_wind_components(wind_dir: int, wind_speed: int, runway_heading: in
 
 
 def determine_phase(resolved: dict, runway_heading: int, airfield_data: dict,
-                    temp: int = None) -> dict:
+                    temp: int = None, cavok: bool = False) -> dict:
     """
     Determine flying phase from resolved weather conditions (LOP Table 5-4).
     
@@ -914,8 +914,14 @@ def determine_phase(resolved: dict, runway_heading: int, airfield_data: dict,
         runway_heading: Active runway heading in degrees.
         airfield_data: Airfield configuration dict.
         temp: Temperature in °C (display-only, used for >50°C HOLD check).
+        cavok: Whether METAR reported CAVOK (guarantees clear below 5000ft AGL only).
     
     Returns dict with phase, restrictions, conditions, and check results.
+    
+    Note: LOP phase table cloud thresholds (8000, 6000, 5000ft) are AMSL.
+    All cloud heights in resolved dict are AGL. Thresholds are converted
+    to AGL using airport elevation for comparison.
+    CAVOK guarantees no cloud below 5000ft AGL only.
     """
     result = {
         'phase': None,
@@ -957,7 +963,20 @@ def determine_phase(resolved: dict, runway_heading: int, airfield_data: dict,
     tailwind = abs(headwind) if headwind < 0 else 0
     headwind_component = headwind if headwind > 0 else 0
     
-    # Cloud helpers
+    # Airport elevation — LOP phase thresholds are AMSL, cloud heights are AGL
+    elevation_ft = airfield_data.get('OEKF', {}).get('elevation_ft', 0)
+    
+    # Convert AMSL phase thresholds to AGL for comparison
+    unrestricted_cloud_agl = 8000 - elevation_ft  # e.g. 5930ft AGL at OEKF
+    restricted_cloud_agl = 6000 - elevation_ft     # e.g. 3930ft AGL
+    fs_vfr_cloud_agl = 5000 - elevation_ft         # e.g. 2930ft AGL
+    
+    # CAVOK guarantees clear below 5000ft AGL only.
+    # If no clouds reported and CAVOK, treat as "lowest observable cloud" at 5000ft AGL
+    # — we don't know what's above that.
+    cavok_guarantee_agl = 5000  # CAVOK definition: no cloud below 5000ft AGL
+    
+    # Cloud helpers (all heights AGL)
     ceiling = None
     lowest_cloud = None
     for c in clouds:
@@ -966,6 +985,12 @@ def determine_phase(resolved: dict, runway_heading: int, airfield_data: dict,
             lowest_cloud = h
         if c['coverage'] in ('BKN', 'OVC') and (ceiling is None or h < ceiling):
             ceiling = h
+    
+    # If CAVOK and no reported clouds, use CAVOK guarantee as lowest observable
+    if cavok and lowest_cloud is None:
+        lowest_cloud_for_phase = cavok_guarantee_agl
+    else:
+        lowest_cloud_for_phase = lowest_cloud
     
     vis_km = vis_m / 1000 if vis_m else None
     
@@ -1016,21 +1041,26 @@ def determine_phase(resolved: dict, runway_heading: int, airfield_data: dict,
     
     # --- Phase checks (most permissive → most restrictive) ---
     
-    # UNRESTRICTED: No cloud of ANY type below 8000ft. Above 8000ft, only FEW allowed.
+    # UNRESTRICTED: No cloud below 8000ft AMSL (= unrestricted_cloud_agl AGL).
+    # Above that, only FEW allowed. CAVOK cannot satisfy if threshold > 5000ft AGL.
     unrestricted_checks = []
     unrestricted_checks.append(('Vis ≥ 8km', vis_km is not None and vis_km >= 8))
-    unrestricted_checks.append(('No cloud < 8000ft', lowest_cloud is None or lowest_cloud >= 8000))
+    unrestricted_checks.append((f'No cloud < 8000ft AMSL ({unrestricted_cloud_agl}ft AGL)',
+                                 lowest_cloud_for_phase is None or lowest_cloud_for_phase >= unrestricted_cloud_agl))
     
     no_sct_bkn_ovc = True
     for cloud in clouds:
-        if cloud['height_ft'] < 8000:
+        if cloud['height_ft'] < unrestricted_cloud_agl:
             no_sct_bkn_ovc = False
             break
         if cloud['coverage'] in ['SCT', 'BKN', 'OVC']:
             no_sct_bkn_ovc = False
             break
+    # CAVOK: cannot guarantee above 5000ft AGL
+    if cavok and not clouds and unrestricted_cloud_agl > cavok_guarantee_agl:
+        no_sct_bkn_ovc = False
     
-    unrestricted_checks.append(('Max FEW above 8000ft', no_sct_bkn_ovc))
+    unrestricted_checks.append((f'Max FEW above 8000ft AMSL', no_sct_bkn_ovc))
     unrestricted_checks.append(('Total wind ≤ 25kt', effective_wind <= 25))
     unrestricted_checks.append(('Crosswind ≤ 15kt', crosswind <= 15))
     unrestricted_checks.append(('Tailwind ≤ 5kt', tailwind <= 5))
@@ -1041,21 +1071,22 @@ def determine_phase(resolved: dict, runway_heading: int, airfield_data: dict,
         result['restrictions'] = {'solo_cadets': True, 'first_solo': True}
         return result
     
-    # RESTRICTED: No cloud of ANY type below 6000ft. Max SCT above 6000ft.
+    # RESTRICTED: No cloud below 6000ft AMSL (= restricted_cloud_agl AGL). Max SCT above.
     restricted_checks = []
     restricted_checks.append(('Vis ≥ 8km', vis_km is not None and vis_km >= 8))
-    restricted_checks.append(('No cloud < 6000ft', lowest_cloud is None or lowest_cloud >= 6000))
+    restricted_checks.append((f'No cloud < 6000ft AMSL ({restricted_cloud_agl}ft AGL)',
+                               lowest_cloud_for_phase is None or lowest_cloud_for_phase >= restricted_cloud_agl))
     
     no_bkn_ovc = True
     for cloud in clouds:
-        if cloud['height_ft'] < 6000:
+        if cloud['height_ft'] < restricted_cloud_agl:
             no_bkn_ovc = False
             break
         if cloud['coverage'] in ['BKN', 'OVC']:
             no_bkn_ovc = False
             break
     
-    restricted_checks.append(('Max SCT above 6000ft', no_bkn_ovc))
+    restricted_checks.append((f'Max SCT above 6000ft AMSL', no_bkn_ovc))
     restricted_checks.append(('Total wind ≤ 25kt', effective_wind <= 25))
     restricted_checks.append(('Crosswind ≤ 15kt', crosswind <= 15))
     restricted_checks.append(('Tailwind ≤ 5kt', tailwind <= 5))
@@ -1066,10 +1097,11 @@ def determine_phase(resolved: dict, runway_heading: int, airfield_data: dict,
         result['restrictions'] = {'solo_cadets': True, 'solo_note': 'Post-IIC only', 'first_solo': True}
         return result
     
-    # FS VFR: No cloud of ANY type below 5000ft
+    # FS VFR: No cloud below 5000ft AMSL (= fs_vfr_cloud_agl AGL)
     fs_vfr_checks = []
     fs_vfr_checks.append(('Vis ≥ 5km', vis_km is not None and vis_km >= 5))
-    fs_vfr_checks.append(('No cloud < 5000ft', lowest_cloud is None or lowest_cloud >= 5000))
+    fs_vfr_checks.append((f'No cloud < 5000ft AMSL ({fs_vfr_cloud_agl}ft AGL)',
+                           lowest_cloud_for_phase is None or lowest_cloud_for_phase >= fs_vfr_cloud_agl))
     fs_vfr_checks.append(('Total wind ≤ 25kt', effective_wind <= 25))
     fs_vfr_checks.append(('Crosswind ≤ 15kt', crosswind <= 15))
     fs_vfr_checks.append(('Tailwind ≤ 5kt', tailwind <= 5))
@@ -2102,7 +2134,8 @@ def main():
     if args.warning:
         collection.add_all(parse_warning_elements(args.warning))
     if args.pirep:
-        collection.add_all(parse_pirep_elements(args.pirep))
+        oekf_elev = airfield_data.get('OEKF', {}).get('elevation_ft', 0)
+        collection.add_all(parse_pirep_elements(args.pirep, elevation_ft=oekf_elev))
 
     phase_end = _now + timedelta(minutes=args.local_lookahead)
 
@@ -2135,7 +2168,8 @@ def main():
 
     # --- PHASE DETERMINATION via WeatherElement pipeline ---
     # phase_resolved already contains worst-case from METAR+WARNING+PIREP
-    phase_result = determine_phase(phase_resolved, runway_heading, airfield_data, temp=metar.temp)
+    phase_result = determine_phase(phase_resolved, runway_heading, airfield_data,
+                                   temp=metar.temp, cavok=metar.cavok)
     # Propagate CAVOK flag from actual METAR report (not derived)
     phase_result['conditions']['cavok'] = metar.cavok
     
