@@ -103,6 +103,8 @@ class METARParser:
         like NSC, visibility, and clouds can appear in any order.
         Only the ICAO code and timestamp are expected near the start.
         """
+        # Normalise to uppercase — METARs are case-insensitive
+        self.raw = self.raw.upper()
         parts = self.raw.split()
         
         # Remove METAR/SPECI prefix
@@ -490,6 +492,8 @@ class TAFParser:
     
     def parse(self):
         """Parse TAF string into periods."""
+        # Normalise to uppercase — TAFs are case-insensitive
+        self.raw = self.raw.upper()
         # Remove "TAF" prefix
         text = self.raw
         if text.startswith('TAF '):
