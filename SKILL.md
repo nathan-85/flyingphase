@@ -61,6 +61,7 @@ python3 scripts/flyingphase.py "<METAR>" ["<TAF>"] [--warning "<text>"] [--bird 
 | `--json` | No | JSON output |
 | `--no-cache` | No | Bypass TAF cache (re-fetch from API) |
 | `--sortie-time` | No | Sortie time HHmm (e.g. 1030) — shows conditions for ±1hr window |
+| `--notams` | No | Fetch live NOTAMs for OEKF + alternates from FAA |
 
 ### Example Command Construction
 
@@ -108,9 +109,25 @@ OEGS → OESD → OERK → OEDM → OEPS → OEHL → OEAH → OEDR
 
 Live TAF auto-fetched for alternate weather assessment.
 
+## NOTAM Integration
+
+When `--notams` is passed, the tool fetches live NOTAMs from the FAA NOTAM Search API (no API key required) for OEKF and all alternate airfields:
+
+- **Closed runways/aerodromes** disqualify alternates from selection
+- **ILS/VOR/DME outages** shown as warnings per alternate
+- **Bird activity NOTAMs** flagged
+- Full NOTAM report appended to output with per-airfield breakdown
+
+The NOTAM checker can also run standalone:
+```bash
+python3 scripts/notam_checker.py OEJD OERK OEGS [--json] [--timeout 15]
+```
+
+**Always pass `--notams` in the command** when the user runs `/airfieldphase`. This ensures alternate recommendations account for real-world NOTAM restrictions.
+
 ## Dependencies
 
-Python 3.7+ stdlib only. Internet required for live TAF fetch (optional).
+Python 3.7+ stdlib only. Internet required for live TAF and NOTAM fetch (optional).
 
 ## Telegram Custom Command
 

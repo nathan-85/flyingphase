@@ -6,6 +6,15 @@
 
 ## Completed ✅
 
+### v2.2 (2026-01-31)
+- [x] **NOTAM Integration** — live FAA NOTAM fetch via `--notams` flag
+- [x] notam_checker.py: FAA NOTAM Search API (no auth, form POST)
+- [x] Classifies NOTAMs: RWY/NAV/AD/AIRSPACE/COM/OBST/GEN
+- [x] High-impact detection: ILS/VOR/DME U/S, runway closed, AD closed, birds
+- [x] NOTAMs affect alternate selection (closed AD/RWY disqualifies)
+- [x] NOTAM warnings shown per alternate in output
+- [x] 86 unit tests (21 new NOTAM tests)
+
 ### v2.1 (2026-01-31)
 - [x] Bird-Strike Risk Levels (LOP 5-13) — `--bird low|moderate|severe`
 - [x] Birds > LOW caps phase at VFR, negates all solo phases
@@ -70,10 +79,6 @@ Nathan providing IAP data (Feb 1):
 
 ## Medium-Priority Improvements 🔧
 
-### NOTAM Checking
-- [ ] Check for runway closures, navaid outages, approach restrictions
-- [ ] Prevents selecting unsuitable alternates
-
 ### Fallback TAF Sources
 - [ ] Add CheckWX or AVWX as additional fallback
 - [ ] Currently: aviationweather.gov primary + retry with timeout
@@ -100,6 +105,7 @@ Nathan providing IAP data (Feb 1):
 
 ### ✅ Working
 - **aviationweather.gov API** — METAR/TAF fetching (with caching + fallback)
+- **FAA NOTAM Search API** — live NOTAMs (no auth, form POST to notams.aim.faa.gov)
 - **SkyVector** — runway data, navaids, elevations
 - **Saudi GACA AIP** (aimss.sans.com.sa) — partial approach data
 
@@ -112,12 +118,14 @@ Nathan providing IAP data (Feb 1):
 
 ## Testing ✓
 
-### Automated (65 tests)
+### Automated (86 tests)
 - [x] METAR parser — standard, CAVOK, variable wind, AUTO, missing fields
 - [x] Wind components — all quadrants, calm, variable, wrap-around
 - [x] Phase determination — all 7 phases, boundary conditions
 - [x] TAF parser — base period, BECMG, TEMPO, FM groups
 - [x] Bird levels — LOW no impact, MODERATE/SEVERE cap at VFR
+- [x] NOTAM classification, date validity, runway/navaid extraction
+- [x] NOTAM alternate impact (AD closed, ILS/VOR outage detection)
 
 ### Real-World Validation (Pending)
 - [ ] Compare output to actual SOF phase calls
