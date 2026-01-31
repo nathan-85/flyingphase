@@ -1462,7 +1462,12 @@ def format_output(phase_result: dict, metar: METARParser, runway: str,
                 
                 status = "✅" if alt.get('suitable') else "❌"
                 reason = alt.get('reasons', [''])[0] if alt.get('reasons') else ''
-                output.append(f"    {status} {alt['icao']} - {reason if reason else 'Suitable'}")
+                label = reason if reason else 'Suitable'
+                output.append(f"    {status} {alt['icao']} - {label}")
+                # Show NOTAM warnings for this alternate
+                notam_warns = [w for w in alt.get('warnings', []) if w.startswith('NOTAM:')]
+                for nw in notam_warns:
+                    output.append(f"      ⚠️ {nw}")
     
     output.append("")
     
@@ -1723,6 +1728,20 @@ def main():
         except (ValueError, IndexError):
             print(f"Warning: Could not parse --sortie-time '{args.sortie_time}'", file=sys.stderr)
     
+    # NOTAM check (before alternate selection so it can disqualify airfields)
+    notam_results = None
+    if args.notams:
+        try:
+            script_dir = Path(__file__).parent
+            if str(script_dir) not in sys.path:
+                sys.path.insert(0, str(script_dir))
+            from notam_checker import (check_notams_for_alternates, format_notam_report,
+                                       get_notam_impact_on_alternate)
+            alt_icaos = airfield_data.get('alternate_priority', [])
+            notam_results = check_notams_for_alternates(alt_icaos, timeout=15)
+        except Exception as e:
+            print(f"Warning: NOTAM check failed: {e}", file=sys.stderr)
+    
     # Find suitable alternates
     checked_alternates = []
     best_alternate = None
@@ -1742,6 +1761,51 @@ def main():
                 metar.wind_dir, metar.get_effective_wind_speed(),
                 use_cache=use_cache
             )
+            
+            # Apply NOTAM impact to alternate suitability
+            if notam_results and notam_results.get('status') == 'ok':
+                try:
+                    notam_impact = get_notam_impact_on_alternate(icao, notam_results)
+                    
+                    if not notam_impact['suitable']:
+                        # Aerodrome closed by NOTAM
+                        suitability['suitable'] = False
+                        suitability['reasons'] = suitability.get('reasons', [])
+                        suitability['reasons'].append('NOTAM: Aerodrome closed')
+                    
+                    if notam_impact.get('closed_runways'):
+                        # Check if all runways are closed
+                        ad_rwys = [r['id'] for r in airfield_data.get(icao, {}).get('runways', [])]
+                        closed = notam_impact['closed_runways']
+                        # Runway NOTAM format may be "13/31" — expand to check both
+                        closed_ids = set()
+                        for cr in closed:
+                            for part in cr.split('/'):
+                                closed_ids.add(part.strip())
+                        all_closed = all(r in closed_ids for r in ad_rwys) if ad_rwys else False
+                        
+                        if all_closed and ad_rwys:
+                            suitability['suitable'] = False
+                            suitability['reasons'] = suitability.get('reasons', [])
+                            suitability['reasons'].append(f"NOTAM: All runways closed ({', '.join(closed)})")
+                        
+                        suitability['warnings'] = suitability.get('warnings', [])
+                        for cr in closed:
+                            suitability['warnings'].append(f"NOTAM: RWY {cr} closed")
+                    
+                    if not notam_impact.get('ils_available', True):
+                        suitability['warnings'] = suitability.get('warnings', [])
+                        suitability['warnings'].append('NOTAM: ILS unserviceable')
+                    
+                    if not notam_impact.get('vor_available', True):
+                        suitability['warnings'] = suitability.get('warnings', [])
+                        suitability['warnings'].append('NOTAM: VOR unserviceable')
+                    
+                    if notam_impact.get('bird_activity'):
+                        suitability['warnings'] = suitability.get('warnings', [])
+                        suitability['warnings'].append('NOTAM: Bird activity reported')
+                except Exception:
+                    pass  # Don't let NOTAM processing break alternate selection
             
             # Calculate fuel
             fuel_lbs, fuel_explanation = calculate_divert_fuel(
@@ -1770,31 +1834,6 @@ def main():
             
             if suitability['suitable'] and not best_alternate:
                 best_alternate = alt_result
-    
-    # NOTAM check (optional)
-    notam_results = None
-    if args.notams:
-        try:
-            from notam_checker import check_notams_for_alternates, format_notam_report
-            alt_icaos = [alt['icao'] for alt in checked_alternates] if checked_alternates else []
-            if not alt_icaos:
-                # Check all alternates by default
-                alt_icaos = airfield_data.get('alternate_priority', [])
-            notam_results = check_notams_for_alternates(alt_icaos, timeout=10)
-        except ImportError:
-            # Try relative import
-            try:
-                script_dir = Path(__file__).parent
-                sys.path.insert(0, str(script_dir))
-                from notam_checker import check_notams_for_alternates, format_notam_report
-                alt_icaos = [alt['icao'] for alt in checked_alternates] if checked_alternates else []
-                if not alt_icaos:
-                    alt_icaos = airfield_data.get('alternate_priority', [])
-                notam_results = check_notams_for_alternates(alt_icaos, timeout=10)
-            except Exception as e:
-                print(f"Warning: NOTAM check failed: {e}", file=sys.stderr)
-        except Exception as e:
-            print(f"Warning: NOTAM check failed: {e}", file=sys.stderr)
     
     # Output
     if args.json:
@@ -1829,14 +1868,10 @@ def main():
             parse_warnings=warning_issues if warning_issues else None
         )
         # Append NOTAM results if checked
-        if notam_results:
-            try:
-                from notam_checker import format_notam_report
-            except ImportError:
-                script_dir = Path(__file__).parent
-                sys.path.insert(0, str(script_dir))
-                from notam_checker import format_notam_report
+        if notam_results and notam_results.get('status') == 'ok':
             output += "\n" + format_notam_report(notam_results) + "\n"
+        elif notam_results and notam_results.get('status') == 'error':
+            output += f"\n⚠️  NOTAM Check: {notam_results.get('message', 'Failed')}\n"
         
         # Append operational notes if provided
         if args.notes:

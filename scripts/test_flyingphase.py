@@ -626,5 +626,215 @@ class TestRunwaySelection(unittest.TestCase):
         self.assertEqual(hdg, 150)
 
 
+# ===================== NOTAM Checker Tests =====================
+
+class TestNotamClassification(unittest.TestCase):
+    """Test NOTAM text classification and impact detection."""
+
+    def setUp(self):
+        from notam_checker import classify_notam, extract_affected_runway, extract_affected_navaid
+        self.classify = classify_notam
+        self.extract_rwy = extract_affected_runway
+        self.extract_nav = extract_affected_navaid
+
+    def test_runway_closure(self):
+        """RWY CLSD detected as RWY category with high impact."""
+        cat, impacts = self.classify("RWY 13/31 CLSD DUE TO MAINT")
+        self.assertEqual(cat, 'RWY')
+        self.assertTrue(any('Runway closed' in i for i in impacts))
+
+    def test_ils_unserviceable(self):
+        """ILS U/S detected as NAV with high impact."""
+        cat, impacts = self.classify("ILS RWY 34 U/S UNTIL FURTHER NOTICE")
+        self.assertEqual(cat, 'NAV')
+        self.assertTrue(any('ILS unserviceable' in i for i in impacts))
+
+    def test_vor_inop(self):
+        """VOR INOP detected."""
+        cat, impacts = self.classify("JED VOR/DME INOP FOR MAINT")
+        self.assertEqual(cat, 'NAV')
+        self.assertTrue(any('VOR unserviceable' in i for i in impacts))
+
+    def test_aerodrome_closed(self):
+        """AD CLSD detected."""
+        cat, impacts = self.classify("AD CLSD TO ALL TRAFFIC")
+        self.assertEqual(cat, 'AD')
+        self.assertTrue(any('Aerodrome closed' in i for i in impacts))
+
+    def test_general_notam(self):
+        """Generic NOTAM classified as GEN with no high impact."""
+        cat, impacts = self.classify("TRIGGER NOTAM PERM AIP AMDT 04/25")
+        self.assertEqual(cat, 'GEN')
+        self.assertEqual(len(impacts), 0)
+
+    def test_bird_activity(self):
+        """Bird activity NOTAM detected."""
+        cat, impacts = self.classify("BIRD CONCENTRATION REPORTED IN THE VICINITY OF AD")
+        self.assertTrue(any('Bird activity' in i for i in impacts))
+
+    def test_extract_runway_single(self):
+        """Extract single runway ID."""
+        rwy = self.extract_rwy("RWY 15 CLSD")
+        self.assertEqual(rwy, '15')
+
+    def test_extract_runway_pair(self):
+        """Extract runway pair."""
+        rwy = self.extract_rwy("RWY 13/31 CLSD DUE TO MAINT")
+        self.assertEqual(rwy, '13/31')
+
+    def test_extract_navaid_ils(self):
+        """Extract ILS navaid."""
+        nav = self.extract_nav("ILS RWY 34 U/S")
+        self.assertEqual(nav, 'ILS')
+
+    def test_extract_navaid_vor(self):
+        """Extract VOR navaid."""
+        nav = self.extract_nav("JED VOR DME INOP")
+        self.assertEqual(nav, 'VOR')
+
+    def test_localizer_unserviceable(self):
+        """Localizer U/S detected."""
+        cat, impacts = self.classify("LOCALIZER RWY 15 OUT OF SERVICE")
+        self.assertEqual(cat, 'NAV')
+        self.assertTrue(any('Localizer unserviceable' in i for i in impacts))
+
+    def test_glideslope_unserviceable(self):
+        """Glideslope INOP detected."""
+        cat, impacts = self.classify("GLIDESLOPE RWY 33 INOP")
+        self.assertEqual(cat, 'NAV')
+        self.assertTrue(any('Glideslope unserviceable' in i for i in impacts))
+
+    def test_tower_closed(self):
+        """TWR CLSD detected."""
+        cat, impacts = self.classify("TWR CLSD OUTSIDE PUBLISHED HRS")
+        self.assertEqual(cat, 'COM')
+        self.assertTrue(any('Tower closed' in i for i in impacts))
+
+    def test_radar_unserviceable(self):
+        """RADAR U/S detected."""
+        cat, impacts = self.classify("RADAR APPROACH SVC U/S")
+        self.assertEqual(cat, 'COM')
+        self.assertTrue(any('Radar unserviceable' in i for i in impacts))
+
+
+class TestNotamCurrentCheck(unittest.TestCase):
+    """Test NOTAM date validity checking."""
+
+    def setUp(self):
+        from notam_checker import is_notam_current
+        self.is_current = is_notam_current
+
+    def test_current_notam(self):
+        """NOTAM with PERM end date is current."""
+        notam = {'startDate': '01/01/2025 0000', 'endDate': 'PERM'}
+        self.assertTrue(self.is_current(notam))
+
+    def test_expired_notam(self):
+        """NOTAM with past end date is not current."""
+        notam = {'startDate': '01/01/2020 0000', 'endDate': '01/01/2021 2359'}
+        self.assertFalse(self.is_current(notam))
+
+    def test_future_notam(self):
+        """NOTAM starting in the future is not current."""
+        notam = {'startDate': '01/01/2099 0000', 'endDate': '12/31/2099 2359'}
+        self.assertFalse(self.is_current(notam))
+
+    def test_no_dates(self):
+        """NOTAM with no dates treated as current."""
+        notam = {}
+        self.assertTrue(self.is_current(notam))
+
+
+class TestNotamAlternateImpact(unittest.TestCase):
+    """Test NOTAM impact assessment for alternates."""
+
+    def setUp(self):
+        from notam_checker import get_notam_impact_on_alternate
+        self.get_impact = get_notam_impact_on_alternate
+
+    def test_no_data(self):
+        """No NOTAM data defaults to suitable."""
+        impact = self.get_impact('OEJD', {'status': 'ok', 'airfields': {}})
+        self.assertTrue(impact['suitable'])
+        self.assertTrue(impact['ils_available'])
+
+    def test_aerodrome_closed(self):
+        """Aerodrome closed makes alternate unsuitable."""
+        results = {
+            'status': 'ok',
+            'airfields': {
+                'OEAH': {
+                    'total_notams': 1,
+                    'high_impact_count': 1,
+                    'notams': [{
+                        'number': 'A0001/26',
+                        'text': 'AD CLSD',
+                        'category': 'AD',
+                        'impacts': ['Aerodrome closed'],
+                        'high_impact': True,
+                        'affected_runway': None,
+                        'affected_navaid': None,
+                        'start': '01/01/2026 0000',
+                        'end': 'PERM'
+                    }],
+                    'summary': {
+                        'aerodrome_closed': True,
+                        'closed_runways': [],
+                        'navaid_outages': [],
+                        'bird_activity': False,
+                        'category_counts': {'AD': 1}
+                    }
+                }
+            }
+        }
+        impact = self.get_impact('OEAH', results)
+        self.assertFalse(impact['suitable'])
+
+    def test_ils_vor_unserviceable(self):
+        """ILS and VOR outages detected correctly."""
+        results = {
+            'status': 'ok',
+            'airfields': {
+                'OEPS': {
+                    'total_notams': 2,
+                    'high_impact_count': 2,
+                    'notams': [
+                        {
+                            'number': 'V0010/26',
+                            'text': 'ILS RWY 33 U/S',
+                            'category': 'NAV',
+                            'impacts': ['ILS unserviceable'],
+                            'high_impact': True,
+                            'affected_runway': '33',
+                            'affected_navaid': 'ILS',
+                            'start': '', 'end': ''
+                        },
+                        {
+                            'number': 'V0014/26',
+                            'text': 'PSA VOR/DME INOP',
+                            'category': 'NAV',
+                            'impacts': ['VOR unserviceable', 'DME unserviceable'],
+                            'high_impact': True,
+                            'affected_runway': None,
+                            'affected_navaid': 'VOR',
+                            'start': '', 'end': ''
+                        }
+                    ],
+                    'summary': {
+                        'aerodrome_closed': False,
+                        'closed_runways': [],
+                        'navaid_outages': ['ILS — ILS unserviceable', 'VOR — VOR unserviceable'],
+                        'bird_activity': False,
+                        'category_counts': {'NAV': 2}
+                    }
+                }
+            }
+        }
+        impact = self.get_impact('OEPS', results)
+        self.assertTrue(impact['suitable'])  # AD still open
+        self.assertFalse(impact['ils_available'])
+        self.assertFalse(impact['vor_available'])
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
