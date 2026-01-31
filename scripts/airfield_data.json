@@ -1,0 +1,658 @@
+{
+  "metadata": {
+    "version": "2.0",
+    "last_updated": "2026-01-31",
+    "sources": [
+      "Saudi GACA AIP AIRAC 04/24 (aimss.sans.com.sa)",
+      "SkyVector airport database (skyvector.com)",
+      "aviationweather.gov API",
+      "Military airfield estimates (OEKF, OEKK, OEPS operational knowledge)"
+    ],
+    "notes": [
+      "Military airfield data (OEKF, OEKK, OEPS) not publicly available - minimums estimated",
+      "OEHL and OEAH ILS CAT I approaches confirmed to exist but exact minimums not extracted from AIP",
+      "All ESTIMATED minimums are conservative based on standard ICAO CAT I/precision approach criteria",
+      "For OEKF (home field): IFR phase logic requires 'higher value of 2 available instrument approaches' - compare ILS vs VOR/TACAN visibility",
+      "OEKK renamed to OESD (King Saud Air Base new ICAO designation)"
+    ]
+  },
+  "airfields": {
+    "OEKF": {
+      "name": "King Faisal Air Academy",
+      "type": "military",
+      "elevation_ft": 2070,
+      "mag_var": "4\u00b0E",
+      "mag_var_degrees": 4,
+      "runways": [
+        {
+          "id": "15L/33R",
+          "heading": "150/330",
+          "reciprocal": "150/330",
+          "true_brg": "154/334"
+        },
+        {
+          "id": "15R/33L",
+          "heading": "150/330",
+          "reciprocal": "150/330",
+          "true_brg": "154/334"
+        }
+      ],
+      "navaids": [
+        {
+          "type": "DVORTAC",
+          "ident": "MKF",
+          "freq_mhz": 111.4,
+          "name": "King Faisal"
+        },
+        {
+          "type": "ILS",
+          "ident": "IMKF",
+          "freq_mhz": 108.1,
+          "runway": "15L",
+          "name": "ILS RWY 15L"
+        },
+        {
+          "type": "ILS",
+          "ident": "IEHS",
+          "freq_mhz": 108.5,
+          "runway": "33R",
+          "name": "ILS RWY 33R"
+        },
+        {
+          "type": "ILS",
+          "ident": "IJAL",
+          "freq_mhz": 110.9,
+          "runway": "33L",
+          "name": "ILS RWY 33L"
+        }
+      ],
+      "approaches": [
+        {
+          "type": "ILS CAT I",
+          "runway": "15L",
+          "minimums": {
+            "ceiling_ft": 200,
+            "visibility_m": 800,
+            "notes": "DH (Decision Height)"
+          },
+          "status": "ESTIMATED",
+          "source": "Standard military CAT I minimums",
+          "note": "Military airfield - not publicly published. Standard CAT I estimate."
+        },
+        {
+          "type": "ILS CAT I",
+          "runway": "33R",
+          "minimums": {
+            "ceiling_ft": 200,
+            "visibility_m": 800,
+            "notes": "DH (Decision Height)"
+          },
+          "status": "ESTIMATED",
+          "source": "Standard military CAT I minimums",
+          "note": "Military airfield - not publicly published. Standard CAT I estimate."
+        },
+        {
+          "type": "ILS CAT I",
+          "runway": "33L",
+          "minimums": {
+            "ceiling_ft": 200,
+            "visibility_m": 800,
+            "notes": "DH (Decision Height)"
+          },
+          "status": "ESTIMATED",
+          "source": "Standard military CAT I minimums",
+          "note": "Military airfield - not publicly published. Standard CAT I estimate."
+        },
+        {
+          "type": "VOR/TACAN",
+          "runway": "15L/15R/33L/33R",
+          "minimums": {
+            "ceiling_ft": 500,
+            "visibility_m": 1600,
+            "notes": "MDA (Minimum Descent Altitude)"
+          },
+          "status": "ESTIMATED",
+          "source": "Standard non-precision approach minimums",
+          "note": "T-21 IFR phase logic: Use HIGHER visibility of ILS (800m) vs VOR/TACAN (1600m) = 1600m threshold"
+        }
+      ],
+      "home_field": true,
+      "ifr_note": "For T-21 IFR phase determination: Compare ILS minimum (800m vis) with VOR/TACAN minimum (1600m vis). IFR phase triggered when weather falls below HIGHER value (1600m)."
+    },
+    "OEGS": {
+      "name": "Gassim / Prince Naif Bin Abdulaziz International",
+      "type": "civil",
+      "elevation_ft": 2126,
+      "mag_var": "4\u00b0E",
+      "mag_var_degrees": 4,
+      "runways": [
+        {
+          "id": "15/33",
+          "heading": "149/329",
+          "reciprocal": "149/329",
+          "true_brg": "153/333"
+        }
+      ],
+      "navaids": [
+        {
+          "type": "VOR/TACAN",
+          "ident": "GAS",
+          "freq_mhz": 117.1,
+          "name": "Gassim"
+        },
+        {
+          "type": "ILS",
+          "ident": "IGAS",
+          "freq_mhz": 110.1,
+          "runway": "15",
+          "name": "ILS RWY 15"
+        }
+      ],
+      "approaches": [
+        {
+          "type": "ILS CAT I",
+          "runway": "15",
+          "minimums": {
+            "ceiling_ft": 214,
+            "visibility_m": 800,
+            "notes": "OCA(H) 2340(214ft), RVR 800m"
+          },
+          "status": "CONFIRMED",
+          "source": "Saudi GACA AIP AIRAC 04/24",
+          "note": "Confirmed from Saudi AIP - ILS CAT I RWY 15"
+        },
+        {
+          "type": "LOC",
+          "runway": "15",
+          "minimums": {
+            "ceiling_ft": 454,
+            "visibility_m": 1600,
+            "notes": "OCA(H) 2580(454ft), vis 1600m"
+          },
+          "status": "CONFIRMED",
+          "source": "Saudi GACA AIP AIRAC 04/24",
+          "note": "Localizer-only approach RWY 15"
+        },
+        {
+          "type": "VOR",
+          "runway": "15",
+          "minimums": {
+            "ceiling_ft": 464,
+            "visibility_m": 1400,
+            "notes": "OCA(H) 2590(464ft), vis 1400m"
+          },
+          "status": "CONFIRMED",
+          "source": "Saudi GACA AIP AIRAC 04/24",
+          "note": "VOR approach RWY 15"
+        },
+        {
+          "type": "VOR",
+          "runway": "33",
+          "minimums": {
+            "ceiling_ft": 500,
+            "visibility_m": 1600,
+            "notes": "Estimated based on typical VOR minimums"
+          },
+          "status": "ESTIMATED",
+          "source": "Chart exists in Saudi AIP but minimums not extracted",
+          "note": "VOR RWY 33 approach confirmed to exist but minimums not read from chart"
+        }
+      ]
+    },
+    "OERK": {
+      "name": "King Khalid International Airport, Riyadh",
+      "type": "civil",
+      "elevation_ft": 2053,
+      "mag_var": "3\u00b0E",
+      "mag_var_degrees": 3,
+      "runways": [
+        {
+          "id": "15L/33R",
+          "heading": "147/327",
+          "reciprocal": "147/327",
+          "true_brg": "150/330",
+          "approach_lighting": "ALSF2 900m"
+        },
+        {
+          "id": "15R/33L",
+          "heading": "147/327",
+          "reciprocal": "147/327",
+          "true_brg": "150/330",
+          "approach_lighting": "ALSF2 900m"
+        }
+      ],
+      "navaids": [
+        {
+          "type": "DVOR/TACAN",
+          "ident": "KIA",
+          "freq_mhz": 113.3,
+          "name": "King Khalid"
+        }
+      ],
+      "approaches": [
+        {
+          "type": "ILS CAT I",
+          "runway": "15L",
+          "minimums": {
+            "ceiling_ft": 200,
+            "visibility_m": 550,
+            "notes": "DH 200ft, RVR 550m (Cat A), 800m (Cat C/D)"
+          },
+          "status": "CONFIRMED",
+          "source": "Saudi GACA AIP",
+          "note": "ILS all 4 runways with ALSF2 approach lighting"
+        },
+        {
+          "type": "ILS CAT I",
+          "runway": "15R",
+          "minimums": {
+            "ceiling_ft": 200,
+            "visibility_m": 550,
+            "notes": "DH 200ft, RVR 550m (Cat A), 800m (Cat C/D)"
+          },
+          "status": "CONFIRMED",
+          "source": "Saudi GACA AIP",
+          "note": "ILS all 4 runways with ALSF2 approach lighting"
+        },
+        {
+          "type": "ILS CAT I",
+          "runway": "33L",
+          "minimums": {
+            "ceiling_ft": 200,
+            "visibility_m": 550,
+            "notes": "DH 200ft, RVR 550m (Cat A), 800m (Cat C/D)"
+          },
+          "status": "CONFIRMED",
+          "source": "Saudi GACA AIP",
+          "note": "ILS all 4 runways with ALSF2 approach lighting"
+        },
+        {
+          "type": "ILS CAT I",
+          "runway": "33R",
+          "minimums": {
+            "ceiling_ft": 200,
+            "visibility_m": 550,
+            "notes": "DH 200ft, RVR 550m (Cat A), 800m (Cat C/D)"
+          },
+          "status": "CONFIRMED",
+          "source": "Saudi GACA AIP",
+          "note": "ILS all 4 runways with ALSF2 approach lighting"
+        }
+      ]
+    },
+    "OEHL": {
+      "name": "Hail Regional Airport",
+      "type": "civil",
+      "elevation_ft": 3305,
+      "mag_var": "4\u00b0E",
+      "mag_var_degrees": 4,
+      "runways": [
+        {
+          "id": "18/36",
+          "heading": "180/360",
+          "reciprocal": "180/360",
+          "true_brg": "184/4"
+        }
+      ],
+      "navaids": [
+        {
+          "type": "DVOR/TACAN",
+          "ident": "HIL",
+          "freq_mhz": 113.5,
+          "name": "Hail"
+        },
+        {
+          "type": "ILS",
+          "ident": "IHIL",
+          "freq_mhz": 110.3,
+          "runway": "18",
+          "name": "ILS RWY 18",
+          "glidepath_mhz": 335.0
+        }
+      ],
+      "approaches": [
+        {
+          "type": "ILS CAT I",
+          "runway": "18",
+          "minimums": {
+            "ceiling_ft": 200,
+            "visibility_m": 800,
+            "notes": "Standard CAT I estimate - ILS confirmed to exist"
+          },
+          "status": "ESTIMATED",
+          "source": "ILS CAT I confirmed in Saudi AIP, minimums not extracted",
+          "note": "ILS CAT I RWY 18 confirmed (IHIL 110.3 MHz, GP 335.0 MHz). Minimums estimated based on standard CAT I."
+        },
+        {
+          "type": "VOR",
+          "runway": "18",
+          "minimums": {
+            "ceiling_ft": 500,
+            "visibility_m": 1600,
+            "notes": "Standard VOR approach estimate"
+          },
+          "status": "ESTIMATED",
+          "source": "VOR RWY 18 confirmed to exist in Saudi AIP",
+          "note": "VOR RWY 18 approach confirmed to exist but minimums not extracted"
+        },
+        {
+          "type": "RNP",
+          "runway": "18",
+          "minimums": {
+            "ceiling_ft": 400,
+            "visibility_m": 1600,
+            "notes": "Standard RNP approach estimate"
+          },
+          "status": "ESTIMATED",
+          "source": "RNP approaches confirmed to exist for RWY 18 and 36",
+          "note": "RNP RWY 18 and RNP RWY 36 confirmed to exist but minimums not extracted"
+        }
+      ]
+    },
+    "OEAH": {
+      "name": "Al-Ahsa Airport",
+      "type": "civil",
+      "elevation_ft": 588,
+      "mag_var": "3\u00b0E",
+      "mag_var_degrees": 3,
+      "runways": [
+        {
+          "id": "16/34",
+          "heading": "162/342",
+          "reciprocal": "162/342",
+          "true_brg": "165/345",
+          "approach_lighting": "CALVERT CAT I 900m (RWY 34)"
+        }
+      ],
+      "navaids": [
+        {
+          "type": "VOR/TACAN",
+          "ident": "HSA",
+          "freq_mhz": 116.6,
+          "name": "Al-Ahsa"
+        },
+        {
+          "type": "ILS",
+          "ident": "IHSA",
+          "freq_mhz": 110.9,
+          "runway": "34",
+          "name": "ILS RWY 34",
+          "glidepath_mhz": 330.8
+        }
+      ],
+      "approaches": [
+        {
+          "type": "ILS CAT I",
+          "runway": "34",
+          "minimums": {
+            "ceiling_ft": 200,
+            "visibility_m": 800,
+            "notes": "Standard CAT I estimate - ILS confirmed to exist with CALVERT approach lighting"
+          },
+          "status": "ESTIMATED",
+          "source": "ILS CAT I confirmed in Saudi AIP with CALVERT CAT I lighting, minimums not extracted",
+          "note": "ILS CAT I RWY 34 confirmed (IHSA 110.9 MHz, GP 330.8 MHz) with CALVERT CAT I approach lighting 900m. Minimums estimated based on standard CAT I."
+        },
+        {
+          "type": "VOR",
+          "runway": "16/34",
+          "minimums": {
+            "ceiling_ft": 500,
+            "visibility_m": 1600,
+            "notes": "Standard VOR approach estimate"
+          },
+          "status": "ESTIMATED",
+          "source": "VOR/TACAN HSA 116.6 MHz available",
+          "note": "VOR approach likely available using HSA VOR/TACAN but not confirmed"
+        }
+      ]
+    },
+    "OEDM": {
+      "name": "Dawadmi",
+      "type": "civil",
+      "elevation_ft": 3031,
+      "mag_var": "3\u00b0E",
+      "mag_var_degrees": 3,
+      "runways": [
+        {
+          "id": "15/33",
+          "heading": "151/331",
+          "reciprocal": "151/331",
+          "true_brg": "154/334",
+          "dimensions": "10007 x 148 feet / 3050 x 45 meters"
+        }
+      ],
+      "navaids": [
+        {
+          "type": "VOR/TACAN",
+          "ident": "DAW",
+          "freq_mhz": 116.1,
+          "name": "Dawadmi"
+        }
+      ],
+      "operations": {
+        "type": "Uncontrolled",
+        "procedures": "TIBA (Traffic Information Broadcast by Aircraft)"
+      },
+      "approaches": [
+        {
+          "type": "VOR",
+          "runway": "15/33",
+          "minimums": {
+            "ceiling_ft": 600,
+            "visibility_m": 2000,
+            "notes": "MDA (Minimum Descent Altitude) - higher due to elevation and terrain"
+          },
+          "status": "ESTIMATED",
+          "source": "VOR/TACAN DAW 116.1 MHz available, minimums estimated",
+          "note": "Uncontrolled field with TIBA procedures. VOR approach estimated. Elevation 3031 ft MSL (confirmed SkyVector)."
+        }
+      ]
+    },
+    "OEPS": {
+      "name": "Prince Sultan Air Base",
+      "type": "military",
+      "elevation_ft": 1651,
+      "mag_var": "3\u00b0E",
+      "mag_var_degrees": 3,
+      "runways": [
+        {
+          "id": "17R/35L",
+          "heading": "170/350",
+          "reciprocal": "170/350",
+          "true_brg": "173/353"
+        },
+        {
+          "id": "17L/35R",
+          "heading": "170/350",
+          "reciprocal": "170/350",
+          "true_brg": "173/353"
+        }
+      ],
+      "approaches": [
+        {
+          "type": "ILS CAT I",
+          "runway": "17R",
+          "minimums": {
+            "ceiling_ft": 200,
+            "visibility_m": 800,
+            "notes": "DH (Decision Height)"
+          },
+          "status": "ESTIMATED",
+          "source": "Standard military CAT I minimums",
+          "note": "Military airfield - not publicly published. ILS approach estimated."
+        }
+      ]
+    },
+    "OEDR": {
+      "name": "Dhahran / King Abdulaziz Air Base",
+      "type": "military",
+      "elevation_ft": 84,
+      "mag_var": "2\u00b0E",
+      "mag_var_degrees": 2,
+      "runways": [
+        {
+          "id": "16R/34L",
+          "heading": "163/343",
+          "reciprocal": "163/343",
+          "true_brg": "165/345",
+          "dimensions": "12008 x 148 feet / 3660 x 45 meters"
+        },
+        {
+          "id": "16L/34R",
+          "heading": "163/343",
+          "reciprocal": "163/343",
+          "true_brg": "165/345",
+          "dimensions": "11811 x 148 feet / 3600 x 45 meters"
+        },
+        {
+          "id": "06/24",
+          "heading": "060/240",
+          "reciprocal": "060/240",
+          "true_brg": "062/242"
+        }
+      ],
+      "navaids": [
+        {
+          "type": "VOR/TACAN",
+          "ident": "DHA",
+          "freq_mhz": 117.2,
+          "name": "Dhahran"
+        }
+      ],
+      "approaches": [
+        {
+          "type": "ILS CAT I",
+          "runway": "34L",
+          "minimums": {
+            "ceiling_ft": 200,
+            "visibility_m": 800,
+            "notes": "DH (Decision Height)"
+          },
+          "status": "ESTIMATED",
+          "source": "Standard military CAT I minimums",
+          "note": "Military airfield (King Abdulaziz Air Base, formerly Dhahran International). ILS approach estimated. Elevation 84 ft MSL (confirmed SkyVector)."
+        },
+        {
+          "type": "VOR/TACAN",
+          "runway": "16R/34L/16L/34R",
+          "minimums": {
+            "ceiling_ft": 500,
+            "visibility_m": 1600,
+            "notes": "MDA (Minimum Descent Altitude)"
+          },
+          "status": "ESTIMATED",
+          "source": "VOR/TACAN DHA 117.2 MHz available",
+          "note": "VOR approach estimated for multiple runways"
+        }
+      ]
+    },
+    "OESD": {
+      "name": "King Saud Air Base (formerly OEKK)",
+      "type": "military",
+      "elevation_ft": 2000,
+      "mag_var": "3\u00b0E",
+      "mag_var_degrees": 3,
+      "runways": [
+        {
+          "id": "18/36",
+          "heading": "180/360",
+          "reciprocal": "180/360",
+          "true_brg": "183/3"
+        }
+      ],
+      "navaids": [
+        {
+          "type": "VOR/TACAN",
+          "ident": "KMC",
+          "freq_mhz": 115.9,
+          "name": "King Saud"
+        }
+      ],
+      "frequencies": [
+        {
+          "type": "AFIS",
+          "freq_mhz": 120.7
+        }
+      ],
+      "approaches": [
+        {
+          "type": "VOR/TACAN",
+          "runway": "18/36",
+          "minimums": {
+            "ceiling_ft": 500,
+            "visibility_m": 1600,
+            "notes": "MDA (Minimum Descent Altitude)"
+          },
+          "status": "ESTIMATED",
+          "source": "Standard non-precision approach minimums",
+          "note": "Military airfield - not publicly published. VOR/TACAN approach estimated."
+        }
+      ],
+      "icao_aliases": [
+        "OEKK"
+      ],
+      "note": "ICAO changed from OEKK to OESD. Military airfield. AFIS on 120.700 MHz, TIBA procedures apply."
+    }
+  },
+  "alternate_priority": [
+    "OEGS",
+    "OESD",
+    "OERK",
+    "OEDM",
+    "OEPS",
+    "OEHL",
+    "OEAH",
+    "OEDR"
+  ],
+  "divert_fuel": {
+    "OEGS": {
+      "fuel_lbs": 480,
+      "bearing": 280,
+      "distance_nm": 78,
+      "notes": "Closest alternate, NW of OEKF"
+    },
+    "OERK": {
+      "fuel_lbs": 530,
+      "bearing": 126,
+      "distance_nm": 107,
+      "notes": "King Khalid International, SE of OEKF, major civil airport"
+    },
+    "OEDM": {
+      "fuel_lbs": 540,
+      "bearing": 208,
+      "distance_nm": 114,
+      "notes": "SW of OEKF, uncontrolled field with TIBA"
+    },
+    "OEPS": {
+      "fuel_lbs": 610,
+      "bearing": 129,
+      "distance_nm": 177,
+      "notes": "Prince Sultan Air Base, SE of OEKF, military coordination required"
+    },
+    "OEHL": {
+      "fuel_lbs": 660,
+      "bearing": 290,
+      "distance_nm": 205,
+      "notes": "Hail Regional, NW of OEKF"
+    },
+    "OEAH": {
+      "fuel_lbs": 690,
+      "bearing": 98,
+      "distance_nm": 238,
+      "notes": "Al-Ahsa, E of OEKF, near Eastern Province"
+    },
+    "OEDR": {
+      "fuel_lbs": 700,
+      "bearing": 83,
+      "distance_nm": 266,
+      "notes": "Dhahran/King Abdulaziz AB, E of OEKF, military coordination required, lowest elevation (84 ft)"
+    },
+    "OESD": {
+      "fuel_lbs": 530,
+      "bearing": 6,
+      "distance_nm": 110,
+      "notes": "North of OEKF, military coordination required"
+    }
+  }
+}
