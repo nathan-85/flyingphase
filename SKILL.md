@@ -14,7 +14,7 @@ Determine the current flying phase at King Faisal Air Academy (OEKF) from a META
 ## Input Format
 
 ```
-/airfieldphase METAR: <metar> [TAF: <taf>] [WARNINGS: <text>] [BIRDS: low|moderate|severe] [NOTES: <notes>]
+/airfieldphase METAR: <metar> [TAF: <taf>] [PIREP: <pirep>] [WARNINGS: <text>] [BIRDS: low|moderate|severe] [NOTES: <notes>]
 ```
 
 All fields except METAR are optional. Examples:
@@ -24,7 +24,7 @@ All fields except METAR are optional. Examples:
 ```
 
 ```
-/airfieldphase METAR: OEKF 311200Z 28018G25KT 5000 SCT040 32/18 Q1012 TAF: OEKF 302200Z 3100/3124 28015KT 6000 SCT050 BECMG 3106/3108 15010KT WARNINGS: CB reported 25NM southwest BIRDS: moderate NOTES: RADAR procedures only, No medical
+/airfieldphase METAR: OEKF 311200Z 28018G25KT 5000 SCT040 32/18 Q1012 TAF: OEKF 302200Z 3100/3124 28015KT 6000 SCT050 BECMG 3106/3108 15010KT PIREP: UA /OV OEKF /FL050 /SK BKN040CB /WX TS WARNINGS: CB reported 25NM southwest BIRDS: moderate NOTES: RADAR procedures only, No medical
 ```
 
 If the user omits labels and pastes a raw METAR string, treat the entire input as the METAR.
@@ -35,29 +35,37 @@ Extract these fields:
 
 1. **METAR** (required) — OEKF METAR string after `METAR:` (or the entire input if no labels)
 2. **TAF** (optional) — OEKF TAF string after `TAF:`
-3. **WARNINGS** (optional) — weather warnings after `WARNINGS:`
-4. **BIRDS** (optional) — Bird-Strike Risk Level after `BIRDS:` — one of `low`, `moderate`, `severe`. Default: `low`
-5. **NOTES** (optional) — operational notes after `NOTES:` (comma-separated)
+3. **PIREP** (optional) — Pilot report after `PIREP:` (e.g. `UA /OV OEKF /FL050 /SK BKN040CB /WX TS`)
+4. **WARNINGS** (optional) — weather warnings after `WARNINGS:`
+5. **BIRDS** (optional) — Bird-Strike Risk Level after `BIRDS:` — one of `low`, `moderate`, `severe`. Default: `low`
+6. **NOTES** (optional) — operational notes after `NOTES:` (comma-separated)
 
 ## Running the Script
 
 ```bash
-python3 scripts/flyingphase.py "<METAR>" ["<TAF>"] [--warning "<text>"] [--bird low|moderate|severe] [--notes "note1" "note2"] [--rwy 33L] [--solo] [--verbose] [--json]
+python3 scripts/flyingphase.py "<METAR>" ["<TAF>"] ["<PIREP>"] [--warning "<text>"] [--bird low|moderate|severe] [--notes "note1" "note2"] [--rwy 33L] [--solo] [--verbose] [--local-lookahead 60] [--notams] [--json]
 ```
+
+Positional inputs (METAR, TAF, PIREP) are **auto-classified** — no labels needed. The script detects:
+- **PIREP**: starts with `UA ` / `UUA ` or contains `/OV` + `/SK` fields
+- **TAF**: starts with `TAF ` or contains `BECMG`/`FM` groups
+- **METAR**: everything else
+
+All positional args must come **before** any flags.
 
 ### Arguments
 
 | Argument | Required | Description |
 |----------|----------|-------------|
-| METAR string | Yes | First positional arg — the OEKF METAR |
-| TAF string | No | Second positional arg — the OEKF TAF |
+| Positional inputs | Yes (1+) | METAR, TAF, PIREP strings — auto-detected |
 | `--warning` | No | Weather warning text |
 | `--bird` | No | Bird-Strike Risk Level: `low` (default), `moderate`, `severe` |
 | `--notes` | No | Operational notes (space-separated strings) |
 | `--rwy 33L` | No | Runway override (auto-selects from wind if omitted) |
 | `--solo` | No | Solo cadet fuel adjustment (+100 lbs) |
 | `--opposite` | No | Opposite-side divert fuel (+30 lbs) |
-| `--verbose` | No | Show all weather inputs for phase and alternate determination |
+| `--verbose` | No | Show all weather inputs including Weather Element Pipeline |
+| `--local-lookahead` | No | OEKF phase window in minutes (default: 60) |
 | `--json` | No | JSON output |
 | `--no-cache` | No | Bypass TAF cache (re-fetch from API) |
 | `--sortie-time` | No | Sortie time HHmm (e.g. 1030) — shows conditions for ±1hr window |
@@ -79,22 +87,33 @@ Phase condition checks (✅/❌ per condition per phase) are **always shown** in
 
 When `--verbose` is passed, the output includes:
 
-- **Phase Determination Inputs**: raw METAR observation values, TAF +30min overlay changes, and the combined values used for phase checks
+- **Phase Determination Inputs**: raw METAR observation values, TAF overlay changes (alternate assessment only)
+- **Weather Element Pipeline**: all weather elements from every source (METAR, TAF, WARNING, PIREP) with validity windows, plus resolved worst-case conditions for phase window (METAR+WARNING+PIREP) and alternate window (all sources)
 - **Alternate Assessment Inputs**: each alternate's TAF conditions (base/BECMG/TEMPO), runway/crosswind, approach type and minimums, rejection reasons
 
 ### Example Command Construction
 
 User sends:
 ```
-/airfieldphase METAR: OEKF 311200Z 28018G25KT 5000 SCT040 32/18 Q1012 TAF: OEKF 302200Z 3100/3124 28015KT 6000 SCT050 WARNINGS: CB 25NM SW BIRDS: moderate NOTES: RADAR only, No medical
+/airfieldphase METAR: OEKF 311200Z 28018G25KT 5000 SCT040 32/18 Q1012 TAF: OEKF 302200Z 3100/3124 28015KT 6000 SCT050 PIREP: UA /OV OEKF /FL050 /SK BKN040CB /WX TS WARNINGS: CB 25NM SW BIRDS: moderate NOTES: RADAR only, No medical
 ```
 
 Run:
 ```bash
-python3 scripts/flyingphase.py "METAR OEKF 311200Z 28018G25KT 5000 SCT040 32/18 Q1012" "TAF OEKF 302200Z 3100/3124 28015KT 6000 SCT050" --warning "CB 25NM SW" --bird moderate --notes "RADAR only" "No medical"
+python3 scripts/flyingphase.py "METAR OEKF 311200Z 28018G25KT 5000 SCT040 32/18 Q1012" "TAF OEKF 302200Z 3100/3124 28015KT 6000 SCT050" "UA /OV OEKF /FL050 /SK BKN040CB /WX TS" --warning "CB 25NM SW" --bird moderate --notes "RADAR only" "No medical" --notams --verbose
 ```
 
-Note: Prefix the METAR string with `METAR ` and TAF string with `TAF ` if the user didn't include those prefixes. Station identifier and timestamp are optional — the parser handles bare METAR elements.
+Note: Prefix the METAR string with `METAR ` and TAF string with `TAF ` if the user didn't include those prefixes. PIREP strings are auto-detected (start with `UA` or `UUA`). Station identifier and timestamp are optional — the parser handles bare METAR elements.
+
+User sends (simple):
+```
+/airfieldphase METAR: 33012KT 9999 FEW080 22/10 Q1018
+```
+
+Run:
+```bash
+python3 scripts/flyingphase.py "33012KT 9999 FEW080 22/10 Q1018" --notams --verbose
+```
 
 ## Output
 
