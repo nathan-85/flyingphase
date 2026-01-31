@@ -1551,8 +1551,8 @@ def format_output(phase_result: dict, metar: METARParser, runway: str,
     output.append(f"{emoji} KFAA Phase: {phase_result['phase']}")
     output.append("")
     
-    # Show phase checks if requested
-    if show_checks and phase_result.get('checks'):
+    # Always show phase checks so users can verify the determination
+    if phase_result.get('checks'):
         output.append("✓ Phase Checks:")
         for phase_name, checks in phase_result['checks'].items():
             output.append(f"  {phase_name}:")
@@ -2206,7 +2206,7 @@ def main():
             'conditions': phase_result['conditions'],
             'restrictions': phase_result.get('restrictions', {}),
             'reasons': phase_result.get('reasons', []),
-            'checks': phase_result.get('checks', {}) if args.checks else {},
+            'checks': phase_result.get('checks', {}),
             'runway': runway,
             'alternate_required': alternate_required,
             'best_alternate': best_alternate,
@@ -2226,7 +2226,7 @@ def main():
             best_alternate=best_alternate,
             taf=taf,
             warnings=warnings if warnings else None,
-            show_checks=args.checks,
+            show_checks=True,
             bird_info=bird_info,
             sortie_window=sortie_window,
             parse_warnings=warning_issues if warning_issues else None
