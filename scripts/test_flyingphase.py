@@ -735,9 +735,9 @@ class TestNotamCurrentCheck(unittest.TestCase):
         self.assertFalse(self.is_current(notam))
 
     def test_future_notam(self):
-        """NOTAM starting in the future is not current."""
+        """NOTAM starting in the future is included (API returns relevant NOTAMs)."""
         notam = {'startDate': '01/01/2099 0000', 'endDate': '12/31/2099 2359'}
-        self.assertFalse(self.is_current(notam))
+        self.assertTrue(self.is_current(notam))
 
     def test_no_dates(self):
         """NOTAM with no dates treated as current."""

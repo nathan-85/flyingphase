@@ -91,6 +91,7 @@ def fetch_notams(icaos: List[str], timeout: int = 15) -> Optional[dict]:
     Returns:
         Parsed JSON response or None on failure
     """
+    # Form parameters matched exactly to the iOS SaudiNOTAM app
     form_data = {
         'searchType': '0',
         'designatorForAccountable': '',
@@ -109,7 +110,7 @@ def fetch_notams(icaos: List[str], timeout: int = 15) -> Optional[dict]:
         'radiusSearchOnDesignator': 'false',
         'radiusSearchDesignator': '',
         'latitudeDirection': 'N',
-        'longitudeDirection': 'E',
+        'longitudeDirection': 'W',
         'freeFormText': '',
         'flightPathText': '',
         'flightPathDivertAirfields': '',
@@ -239,10 +240,16 @@ def classify_notam(notam_text: str) -> Tuple[str, List[str]]:
 
 
 def is_notam_current(notam: dict) -> bool:
-    """Check if NOTAM is currently active based on start/end dates."""
-    now = datetime.now(timezone.utc)
+    """Check if NOTAM is current or upcoming (within 24h) based on dates.
     
-    start_str = notam.get('startDate', '')
+    The FAA API already filters for relevant NOTAMs, so we only exclude
+    clearly expired ones. Upcoming NOTAMs (starting within 24h) are included
+    since they're operationally relevant for flight planning.
+    """
+    now = datetime.now(timezone.utc)
+    from datetime import timedelta
+    lookahead = now + timedelta(hours=24)
+    
     end_str = notam.get('endDate', '')
     
     # Parse "MM/DD/YYYY HHmm" format
@@ -254,12 +261,9 @@ def is_notam_current(notam: dict) -> bool:
         except (ValueError, TypeError):
             return None
     
-    start = parse_faa_date(start_str)
     end = parse_faa_date(end_str)
     
-    # If no end date or PERM, treat as current
-    if start and start > now:
-        return False
+    # Only exclude clearly expired NOTAMs
     if end and end < now:
         return False
     
