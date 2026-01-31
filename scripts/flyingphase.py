@@ -89,8 +89,14 @@ class METARParser:
                 idx = i + 1
                 break
         
-        # Skip date/time (DDHHmmZ)
+        # Date/time (DDHHmmZ)
+        self.obs_day = None
+        self.obs_hour = None
+        self.obs_minute = None
         if idx < len(parts) and re.match(r'\d{6}Z', parts[idx]):
+            self.obs_day = int(parts[idx][:2])
+            self.obs_hour = int(parts[idx][2:4])
+            self.obs_minute = int(parts[idx][4:6])
             idx += 1
         
         # Skip AUTO or COR if present
@@ -359,6 +365,62 @@ class METARParser:
             warnings.append(' '.join(parts))
         return warnings
 
+    def apply_taf_overlay(self, taf_overrides: dict) -> List[str]:
+        """
+        Overlay worst-case TAF planning window conditions onto this METAR.
+        
+        Only overrides values where the TAF is MORE RESTRICTIVE than current METAR.
+        Returns list of factors that were applied.
+        """
+        factors = []
+        
+        # Visibility: take lowest
+        ov_vis = taf_overrides.get('visibility_m')
+        if ov_vis is not None and (self.visibility_m is None or ov_vis < self.visibility_m):
+            self.visibility_m = ov_vis
+            factors.append(f'Vis → {ov_vis}m (TAF)')
+        
+        # Wind: take highest effective wind
+        ov_wind_eff = (taf_overrides.get('wind_gust') or taf_overrides.get('wind_speed') or 0)
+        my_wind_eff = self.get_effective_wind_speed()
+        if ov_wind_eff > my_wind_eff:
+            self.wind_dir = taf_overrides.get('wind_dir', self.wind_dir)
+            self.wind_speed = taf_overrides.get('wind_speed', self.wind_speed)
+            self.wind_gust = taf_overrides.get('wind_gust', self.wind_gust)
+            factors.append(f'Wind → {self.wind_dir}/{self.wind_speed}'
+                          f'{"G" + str(self.wind_gust) if self.wind_gust else ""}kt (TAF)')
+        
+        # Clouds/ceiling: merge — add any TAF clouds that are lower
+        for taf_cloud in taf_overrides.get('clouds', []):
+            # Check if this cloud is lower than any existing METAR cloud
+            already_covered = False
+            for mc in self.clouds:
+                if mc['height_ft'] <= taf_cloud['height_ft'] and \
+                   mc['coverage'] >= taf_cloud['coverage']:  # BKN > SCT etc (string compare works)
+                    already_covered = True
+                    break
+            if not already_covered:
+                self.clouds.append(taf_cloud)
+                factors.append(f"Cloud → {taf_cloud['coverage']}{taf_cloud['height_ft']//100:03d} (TAF)")
+        
+        # Re-sort clouds by height
+        self.clouds.sort(key=lambda c: c['height_ft'])
+        
+        # CB
+        if taf_overrides.get('has_cb') and not self.has_cb():
+            self.weather.append('CB')
+            self.has_ts_weather = True
+            factors.append('CB forecast (TAF)')
+        
+        # Weather phenomena
+        for wx in taf_overrides.get('weather', []):
+            if wx not in self.weather:
+                self.weather.append(wx)
+                if wx == 'TS':
+                    self.has_ts_weather = True
+        
+        return factors
+
 
 class TAFParser:
     """Parse TAF strings and extract forecast periods."""
@@ -537,6 +599,102 @@ class TAFParser:
         for p in self.fm_periods:
             periods.append(('FM', p))
         return periods
+
+    def get_planning_window(self, now_hour: int, now_min: int, window_min: int = 30) -> dict:
+        """
+        Get worst-case TAF conditions over [now, now+window_min].
+        
+        Checks all BECMG/TEMPO/FM periods that overlap the window.
+        Returns dict with worst-case overrides (only fields that are worse than None).
+        """
+        window_start = now_hour + now_min / 60.0
+        window_end = window_start + window_min / 60.0
+        
+        overrides = {
+            'visibility_m': None,
+            'wind_dir': None,
+            'wind_speed': None,
+            'wind_gust': None,
+            'ceiling_ft': None,
+            'lowest_cloud_ft': None,
+            'clouds': [],
+            'has_cb': False,
+            'weather': [],
+            'factors': []  # Human-readable list of what TAF contributed
+        }
+        
+        def _period_overlaps(p_from, p_to):
+            """Check if TAF period [p_from, p_to) overlaps [window_start, window_end]."""
+            if p_from is None:
+                return True  # No time info → assume could overlap
+            pf = float(p_from)
+            pt = float(p_to) if p_to is not None else pf + 24
+            # Handle day wrap (e.g., valid_from=22, valid_to=6 means 22Z-06Z next day)
+            ws = window_start % 24
+            we = window_end % 24
+            if pt <= pf:
+                pt += 24
+            if we <= ws:
+                we += 24
+            return pf < we and pt > ws
+        
+        for period_type, period in self.get_all_periods():
+            if period_type == 'BASE':
+                # Base period always applies (it's the background forecast)
+                pass
+            else:
+                p_from = period.get('valid_from_utc')
+                p_to = period.get('valid_to_utc')
+                if not _period_overlaps(p_from, p_to):
+                    continue
+            
+            # Visibility: take lowest
+            p_vis = period.get('visibility_m')
+            if p_vis is not None:
+                if overrides['visibility_m'] is None or p_vis < overrides['visibility_m']:
+                    overrides['visibility_m'] = p_vis
+                    if period_type != 'BASE':
+                        overrides['factors'].append(f'{period_type}: vis {p_vis}m')
+            
+            # Wind: take highest effective (gust or sustained)
+            p_wind_eff = period.get('wind_gust') or period.get('wind_speed', 0)
+            current_eff = overrides['wind_gust'] or overrides['wind_speed'] or 0
+            if p_wind_eff > current_eff:
+                overrides['wind_dir'] = period.get('wind_dir', overrides['wind_dir'])
+                overrides['wind_speed'] = period.get('wind_speed', overrides['wind_speed'])
+                overrides['wind_gust'] = period.get('wind_gust')
+                if period_type != 'BASE':
+                    g_str = f"G{period.get('wind_gust')}" if period.get('wind_gust') else ""
+                    overrides['factors'].append(
+                        f"{period_type}: wind {period.get('wind_dir', '???')}/"
+                        f"{period.get('wind_speed', '?')}{g_str}kt"
+                    )
+            
+            # Ceiling/clouds: take lowest ceiling
+            for cloud in period.get('clouds', []):
+                if cloud['coverage'] in ['BKN', 'OVC']:
+                    h = cloud['height_ft']
+                    if overrides['ceiling_ft'] is None or h < overrides['ceiling_ft']:
+                        overrides['ceiling_ft'] = h
+                        if period_type != 'BASE':
+                            overrides['factors'].append(f'{period_type}: ceiling {h}ft')
+                # Track lowest cloud of any type
+                h = cloud['height_ft']
+                if overrides['lowest_cloud_ft'] is None or h < overrides['lowest_cloud_ft']:
+                    overrides['lowest_cloud_ft'] = h
+                overrides['clouds'].append(cloud)
+            
+            # CB / weather
+            if period.get('has_cb'):
+                overrides['has_cb'] = True
+                if period_type != 'BASE':
+                    overrides['factors'].append(f'{period_type}: CB forecast')
+            
+            for wx in period.get('weather', []):
+                if wx not in overrides['weather']:
+                    overrides['weather'].append(wx)
+        
+        return overrides
     
     def check_deterioration(self, vis_limit_m: int = 5000, ceiling_limit_ft: int = 1500) -> Tuple[bool, str]:
         """Check if any period shows deterioration below limits."""
@@ -1361,7 +1519,7 @@ def format_output(phase_result: dict, metar: METARParser, runway: str,
     if cond.get('cavok'):
         cloud_str = "CAVOK"
     elif not cond['clouds']:
-        cloud_str = "SKC"
+        cloud_str = "NSC" if 'NSC' in metar.raw else "SKC"
     else:
         cloud_parts = []
         for c in cond['clouds']:
@@ -1386,6 +1544,12 @@ def format_output(phase_result: dict, metar: METARParser, runway: str,
     
     if cond['temp'] is not None:
         output.append(f"  Temp: {cond['temp']}°C")
+    
+    # TAF planning window overlay
+    if phase_result.get('taf_overlay'):
+        output.append(f"  📅 TAF +30min overlay:")
+        for factor in phase_result['taf_overlay']:
+            output.append(f"    • {factor}")
     
     output.append("")
     
@@ -1650,10 +1814,27 @@ def main():
     else:
         runway, runway_heading = select_runway(metar, airfield_data, 'OEKF')
     
-    # Determine phase
+    # Apply TAF planning window overlay (worst-case next 30 min)
+    taf_overlay_factors = []
+    if taf and metar.obs_hour is not None:
+        taf_window = taf.get_planning_window(
+            metar.obs_hour, metar.obs_minute or 0, window_min=30
+        )
+        taf_overlay_factors = metar.apply_taf_overlay(taf_window)
+        # Also capture the TAF factor descriptions for output
+        taf_overlay_factors.extend(taf_window.get('factors', []))
+        # Re-select runway if wind changed from TAF overlay
+        if not args.runway and any('Wind' in f for f in taf_overlay_factors):
+            runway, runway_heading = select_runway(metar, airfield_data, 'OEKF')
+    
+    # Determine phase (now uses METAR + TAF worst-case overlay)
     phase_result = determine_phase(metar, runway_heading, airfield_data)
     
-    # Check if alternate required
+    # Tag overlay factors onto the phase result for output
+    if taf_overlay_factors:
+        phase_result['taf_overlay'] = taf_overlay_factors
+    
+    # Check if alternate required (conditions already reflect TAF overlay)
     alternate_required = False
     warnings = []
     
