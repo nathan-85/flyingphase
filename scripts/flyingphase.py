@@ -2541,6 +2541,19 @@ def main():
             for note in args.notes:
                 output += f"\n  • {note}"
             output += "\n"
+        
+        # AMSL/AGL disclaimer
+        elev = airfield_data.get('OEKF', {}).get('elevation_ft', 0)
+        output += f"\n📐 Altitude Reference (OEKF elev {elev}ft AMSL):"
+        output += "\n  • LOP phase table cloud thresholds are AMSL"
+        output += f"\n    UNRESTRICTED: <8000ft AMSL = <{8000 - elev}ft AGL"
+        output += f"\n    RESTRICTED:   <6000ft AMSL = <{6000 - elev}ft AGL"
+        output += f"\n    FS VFR:       <5000ft AMSL = <{5000 - elev}ft AGL"
+        output += "\n  • METAR/TAF cloud heights are AGL (above aerodrome)"
+        output += "\n  • PIREP cloud heights are AMSL (above sea level)"
+        output += "\n  • CAVOK guarantees clear below 5000ft AGL only"
+        output += "\n"
+        
         print(output)
 
 
