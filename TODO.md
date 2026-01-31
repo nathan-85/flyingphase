@@ -6,14 +6,17 @@
 
 ## Completed ✅
 
-### v2.2 (2026-01-31)
-- [x] **NOTAM Integration** — live FAA NOTAM fetch via `--notams` flag
-- [x] notam_checker.py: FAA NOTAM Search API (no auth, form POST)
-- [x] Classifies NOTAMs: RWY/NAV/AD/AIRSPACE/COM/OBST/GEN
-- [x] High-impact detection: ILS/VOR/DME U/S, runway closed, AD closed, birds
+### v2.3 (2026-01-31)
+- [x] **NOTAM via FAA External API** — proper `external-api.faa.gov/notamapi/v1` integration
+- [x] GeoJSON response, per-ICAO GET requests (matches iOS `FAA_API` branch)
+- [x] XOR-obfuscated credentials embedded in script (works out of the box)
+- [x] Env vars `FAA_CLIENT_ID`/`FAA_CLIENT_SECRET` override if set
+- [x] OEKF NOTAMs returned correctly (TACAN U/S, ILS 33L U/S)
 - [x] NOTAMs affect alternate selection (closed AD/RWY disqualifies)
 - [x] NOTAM warnings shown per alternate in output
-- [x] 86 unit tests (21 new NOTAM tests)
+- [x] High-impact detection: ILS/VOR/DME/TACAN/NDB/Localizer/Glideslope U/S, RWY closed, AD closed, birds
+- [x] Classifies NOTAMs: RWY/NAV/AD/AIRSPACE/COM/OBST/GEN
+- [x] 82 unit tests
 
 ### v2.1 (2026-01-31)
 - [x] Bird-Strike Risk Levels (LOP 5-13) — `--bird low|moderate|severe`
@@ -24,7 +27,6 @@
 - [x] Time-windowed TAF parsing — `--sortie-time HHmm`
 - [x] CB detection improvements (METAR remarks + TAF periods)
 - [x] METAR parse validation — clear error messages per missing field
-- [x] 65 unit tests (METAR parser, wind components, phase logic, TAF, bird levels)
 - [x] Skill renamed to `airfieldphase` for `/airfieldphase` slash command
 - [x] LOP PDF and key extracts saved to references/
 - [x] Telegram custom command registered
@@ -104,8 +106,8 @@ Nathan providing IAP data (Feb 1):
 ## Data Sources 📚
 
 ### ✅ Working
+- **FAA External API** — NOTAMs via `external-api.faa.gov/notamapi/v1` (GeoJSON, embedded credentials)
 - **aviationweather.gov API** — METAR/TAF fetching (with caching + fallback)
-- **FAA NOTAM Search API** — live NOTAMs (no auth, form POST to notams.aim.faa.gov)
 - **SkyVector** — runway data, navaids, elevations
 - **Saudi GACA AIP** (aimss.sans.com.sa) — partial approach data
 
@@ -118,16 +120,23 @@ Nathan providing IAP data (Feb 1):
 
 ## Testing ✓
 
-### Automated (86 tests)
+### Automated (82 tests)
 - [x] METAR parser — standard, CAVOK, variable wind, AUTO, missing fields
 - [x] Wind components — all quadrants, calm, variable, wrap-around
 - [x] Phase determination — all 7 phases, boundary conditions
 - [x] TAF parser — base period, BECMG, TEMPO, FM groups
 - [x] Bird levels — LOW no impact, MODERATE/SEVERE cap at VFR
-- [x] NOTAM classification, date validity, runway/navaid extraction
+- [x] NOTAM classification, runway/navaid extraction
 - [x] NOTAM alternate impact (AD closed, ILS/VOR outage detection)
 
 ### Real-World Validation (Pending)
 - [ ] Compare output to actual SOF phase calls
 - [ ] Validate divert fuel with flight planning
 - [ ] Verify alternate selections match KFAA procedures
+
+---
+
+## Lessons Learned 📝
+- **Always check all git branches**, not just main (found `FAA_API` branch with proper integration)
+- FAA External API requires `client_id`/`client_secret` — embed obfuscated, don't rely on user setup
+- `notams.aim.faa.gov/notamSearch/search` is website scraping, not the proper API
