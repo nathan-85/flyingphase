@@ -70,37 +70,93 @@ class METARParser:
         issues.extend(self.parse_warnings)
         return issues
     
-    def parse(self):
-        """Parse METAR string."""
-        parts = self.raw.split()
-        idx = 0
+    @staticmethod
+    def _is_weather_token(token: str) -> bool:
+        """Check if a token is a valid weather phenomenon group.
         
-        # Remove "METAR" prefix if present
-        if parts and parts[0] == 'METAR':
+        Weather tokens are composed of 2-character codes (with optional +/- prefix).
+        e.g. TSRA = TS+RA, BLDU = BL+DU, +SHRA = SH+RA, -DZ = DZ
+        """
+        t = token.upper().lstrip('+-')
+        if len(t) < 2 or len(t) > 8 or len(t) % 2 != 0:
+            return False
+        wx_codes = {
+            'MI', 'BC', 'PR', 'DR', 'BL', 'SH', 'TS', 'FZ',  # Descriptors
+            'DZ', 'RA', 'SN', 'SG', 'IC', 'PL', 'GR', 'GS',  # Precipitation
+            'BR', 'FG', 'FU', 'VA', 'DU', 'SA', 'HZ', 'PO',  # Obscuration
+            'SQ', 'FC', 'SS', 'DS',                             # Other
+        }
+        return all(t[i:i+2] in wx_codes for i in range(0, len(t), 2))
+    
+    def parse(self):
+        """Parse METAR string using order-independent token classification.
+        
+        Tokens are classified by pattern rather than position, so elements
+        like NSC, visibility, and clouds can appear in any order.
+        Only the ICAO code and timestamp are expected near the start.
+        """
+        parts = self.raw.split()
+        
+        # Remove METAR/SPECI prefix
+        if parts and parts[0] in ('METAR', 'SPECI'):
             parts = parts[1:]
         
-        # ICAO code (4 letters)
+        # --- Split observation from trend/remarks ---
+        # Everything after NOSIG/TEMPO/BECMG is trend forecast (not observation)
+        # Everything after RMK is remarks
+        obs_parts = []
+        trend_start = None
+        rmk_start = None
+        
         for i, part in enumerate(parts):
-            if len(part) == 4 and part.isalpha() and part.isupper():
+            if part == 'RMK' and rmk_start is None:
+                rmk_start = i
+                break
+            if part in ('NOSIG', 'TEMPO', 'BECMG') and trend_start is None:
+                trend_start = i
+                break
+            obs_parts.append(part)
+        
+        # Capture remarks
+        if rmk_start is not None:
+            self.remarks = ' '.join(parts[rmk_start + 1:])
+        elif trend_start is not None:
+            # Check for RMK after trend
+            for i in range(trend_start, len(parts)):
+                if parts[i] == 'RMK':
+                    self.remarks = ' '.join(parts[i + 1:])
+                    break
+        
+        # Track which tokens have been consumed
+        consumed = set()
+        
+        # --- 1. ICAO code (4 uppercase letters, not a weather token) ---
+        # Only look in first 3 tokens to avoid false matches
+        for i, part in enumerate(obs_parts[:3]):
+            if (len(part) == 4 and part.isalpha() and part.isupper()
+                    and not self._is_weather_token(part)
+                    and part not in ('AUTO', 'CAVOK')):
                 self.icao = part
-                idx = i + 1
+                consumed.add(i)
                 break
         
-        # Default to OEKF if no station code found (tool is OEKF-specific)
         if not self.icao:
             self.icao = 'OEKF'
         
-        # Date/time (DDHHmmZ)
+        # --- 2. Timestamp (DDHHmmZ) ---
         self.obs_day = None
         self.obs_hour = None
         self.obs_minute = None
-        if idx < len(parts) and re.match(r'\d{6}Z', parts[idx]):
-            self.obs_day = int(parts[idx][:2])
-            self.obs_hour = int(parts[idx][2:4])
-            self.obs_minute = int(parts[idx][4:6])
-            idx += 1
+        for i, part in enumerate(obs_parts):
+            if i in consumed:
+                continue
+            if re.match(r'^\d{6}Z$', part):
+                self.obs_day = int(part[:2])
+                self.obs_hour = int(part[2:4])
+                self.obs_minute = int(part[4:6])
+                consumed.add(i)
+                break
         
-        # Default to current UTC if no timestamp (METAR assumed current)
         if self.obs_hour is None:
             from datetime import datetime as _dt, timezone as _tz
             _now = _dt.now(_tz.utc)
@@ -108,18 +164,21 @@ class METARParser:
             self.obs_hour = _now.hour
             self.obs_minute = _now.minute
         
-        # Skip AUTO or COR if present
-        if idx < len(parts) and parts[idx] in ('AUTO', 'COR'):
-            idx += 1
+        # --- 3. AUTO / COR ---
+        for i, part in enumerate(obs_parts):
+            if i in consumed:
+                continue
+            if part in ('AUTO', 'COR'):
+                consumed.add(i)
         
-        # Wind: 28018G25KT or 28018KT or VRB03KT or 00000KT
-        # Also handle variable: 280V340
-        if idx < len(parts):
-            wind_pattern = r'(\d{3}|VRB)(\d{2,3})(G(\d{2,3}))?KT'
-            match = re.match(wind_pattern, parts[idx])
+        # --- 4. Wind (dddssKT, dddssGggKT, VRBssKT, 00000KT) ---
+        for i, part in enumerate(obs_parts):
+            if i in consumed:
+                continue
+            match = re.match(r'^(\d{3}|VRB)(\d{2,3})(G(\d{2,3}))?KT$', part)
             if match:
                 if match.group(1) == 'VRB':
-                    self.wind_dir = None  # Variable wind
+                    self.wind_dir = None
                 elif match.group(1) == '000':
                     self.wind_dir = 0
                     self.wind_speed = 0
@@ -130,146 +189,116 @@ class METARParser:
                     self.wind_speed = int(match.group(2))
                     if match.group(4):
                         self.wind_gust = int(match.group(4))
-                idx += 1
+                consumed.add(i)
+                break
         
-        # Variable wind direction: 280V340
-        if idx < len(parts):
-            var_pattern = r'(\d{3})V(\d{3})'
-            match = re.match(var_pattern, parts[idx])
+        # --- 5. Variable wind direction (dddVddd) ---
+        for i, part in enumerate(obs_parts):
+            if i in consumed:
+                continue
+            match = re.match(r'^(\d{3})V(\d{3})$', part)
             if match:
                 self.wind_variable_from = int(match.group(1))
                 self.wind_variable_to = int(match.group(2))
-                idx += 1
+                consumed.add(i)
+                break
         
-        # Visibility: 9999, 5000, 3000, CAVOK, P6SM
-        # Can have weather: "3000 BR" or "2000 FG HZ"
-        if idx < len(parts):
-            if parts[idx] == 'CAVOK':
+        # --- 6. Visibility (4-digit meters, CAVOK, statute miles) ---
+        for i, part in enumerate(obs_parts):
+            if i in consumed:
+                continue
+            if part == 'CAVOK':
                 self.cavok = True
                 self.visibility_m = 10000
-                # CAVOK means no cloud below 5000ft and vis 10km+
-                idx += 1
-            elif re.match(r'P?\d+SM', parts[idx]):
-                # Statute miles (P6SM = greater than 6SM)
-                sm_match = re.match(r'P?(\d+)SM', parts[idx])
+                consumed.add(i)
+                break
+            elif re.match(r'^P?\d+SM$', part):
+                sm_match = re.match(r'^P?(\d+)SM$', part)
                 sm = int(sm_match.group(1))
-                self.visibility_m = int(sm * 1609)  # Convert to meters
-                idx += 1
-            elif re.match(r'^\d{4}$', parts[idx]):
-                vis = int(parts[idx])
-                if vis == 9999:
-                    self.visibility_m = 10000
-                else:
-                    self.visibility_m = vis
-                idx += 1
-        
-        # Runway Visual Range: R33L/1200M or R15L/P2000
-        while idx < len(parts) and parts[idx].startswith('R'):
-            rvr_pattern = r'R(\d{2}[LCR]?)/([PM]?\d{4})'
-            match = re.match(rvr_pattern, parts[idx])
-            if match:
-                self.rvr.append({
-                    'runway': match.group(1),
-                    'distance_m': match.group(2)
-                })
-                idx += 1
-            else:
+                self.visibility_m = int(sm * 1609)
+                consumed.add(i)
+                break
+            elif re.match(r'^\d{4}$', part):
+                vis = int(part)
+                self.visibility_m = 10000 if vis == 9999 else vis
+                consumed.add(i)
                 break
         
-        # Weather phenomena (BR, FG, HZ, etc.)
-        weather_codes = [
-            'MI', 'BC', 'PR', 'DR', 'BL', 'SH', 'TS', 'FZ',  # Descriptors
-            'DZ', 'RA', 'SN', 'SG', 'IC', 'PL', 'GR', 'GS',  # Precipitation
-            'BR', 'FG', 'FU', 'VA', 'DU', 'SA', 'HZ', 'PO',  # Obscuration
-            'SQ', 'FC', 'SS', 'DS'  # Other
-        ]
-        
-        while idx < len(parts):
-            part_upper = parts[idx].upper()
-            # Check if this part contains weather codes
-            is_weather = False
-            for code in weather_codes:
-                if code in part_upper:
-                    is_weather = True
-                    break
-            
-            if is_weather:
-                self.weather.append(parts[idx])
-                # Detect thunderstorm as CB indicator
-                if 'TS' in part_upper:
-                    self.has_ts_weather = True
-                idx += 1
-            else:
-                break
-        
-        # Clouds: FEW040, SCT020, BKN015, OVC010, NSC, SKC, NCD
-        special_cloud_codes = ['NSC', 'SKC', 'NCD', 'CLR', 'CAVOK']
-        # METAR trend indicators — everything after these is trend forecast, not observation
-        trend_indicators = ['NOSIG', 'TEMPO', 'BECMG']
-        
-        while idx < len(parts):
-            part = parts[idx]
-            
-            # Stop cloud parsing at trend indicators (NOSIG, TEMPO, BECMG)
-            # These mark the boundary between observation and trend forecast
-            if part in trend_indicators:
-                break
-            
-            # Check for special cloud codes
-            if part in special_cloud_codes:
-                # These mean no significant cloud
-                idx += 1
+        # --- 7. RVR (R33L/1200M, R15L/P2000) ---
+        for i, part in enumerate(obs_parts):
+            if i in consumed:
                 continue
-            
-            # Standalone CB or TCU (e.g., "+TSRA CB BKN010CB")
-            # Skip it but note as weather indicator
-            if part in ('CB', 'TCU'):
-                if part == 'CB':
+            if part.startswith('R'):
+                match = re.match(r'^R(\d{2}[LCR]?)/([PM]?\d{4})', part)
+                if match:
+                    self.rvr.append({
+                        'runway': match.group(1),
+                        'distance_m': match.group(2)
+                    })
+                    consumed.add(i)
+        
+        # --- 8. Weather phenomena (BR, FG, TSRA, BLDU, +SHRA, etc.) ---
+        for i, part in enumerate(obs_parts):
+            if i in consumed:
+                continue
+            upper = part.upper()
+            # Standalone CB or TCU
+            if upper in ('CB', 'TCU'):
+                if upper == 'CB':
                     self.weather.append('CB')
-                idx += 1
+                consumed.add(i)
                 continue
-            
-            cloud_pattern = r'(FEW|SCT|BKN|OVC)(\d{3})(CB|TCU)?'
-            match = re.match(cloud_pattern, part)
+            if self._is_weather_token(part):
+                self.weather.append(part)
+                if 'TS' in upper:
+                    self.has_ts_weather = True
+                consumed.add(i)
+        
+        # --- 9. Clouds (FEW040, SCT020, BKN015CB, OVC010, NSC, SKC, NCD, CLR) ---
+        clear_sky_codes = {'NSC', 'SKC', 'NCD', 'CLR'}
+        for i, part in enumerate(obs_parts):
+            if i in consumed:
+                continue
+            if part in clear_sky_codes:
+                consumed.add(i)
+                continue
+            match = re.match(r'^(FEW|SCT|BKN|OVC)(\d{3})(CB|TCU)?$', part)
             if match:
                 coverage = match.group(1)
                 height_ft = int(match.group(2)) * 100
                 cloud_type = match.group(3) if match.group(3) else None
-                
                 self.clouds.append({
                     'coverage': coverage,
                     'height_ft': height_ft,
                     'type': cloud_type
                 })
-                idx += 1
-            else:
-                break
+                consumed.add(i)
         
-        # Temperature/Dewpoint: 32/18 or M05/M10 (M = minus)
-        while idx < len(parts):
-            temp_pattern = r'(M?\d{2})/(M?\d{2})'
-            match = re.match(temp_pattern, parts[idx])
+        # --- 10. Temperature / Dewpoint (22/10, M02/M05) ---
+        for i, part in enumerate(obs_parts):
+            if i in consumed:
+                continue
+            match = re.match(r'^(M?\d{2})/(M?\d{2})$', part)
             if match:
-                temp_str = match.group(1)
-                self.temp = int(temp_str.replace('M', '-'))
-                dew_str = match.group(2)
-                self.dewpoint = int(dew_str.replace('M', '-'))
-                idx += 1
+                self.temp = int(match.group(1).replace('M', '-'))
+                self.dewpoint = int(match.group(2).replace('M', '-'))
+                consumed.add(i)
                 break
-            idx += 1
         
-        # QNH: Q1012 or A2992
-        for part in parts:
-            qnh_pattern = r'Q(\d{4})'
-            match = re.match(qnh_pattern, part)
+        # --- 11. QNH (Q1013 or A2992) ---
+        for i, part in enumerate(obs_parts):
+            if i in consumed:
+                continue
+            match = re.match(r'^Q(\d{4})$', part)
             if match:
                 self.qnh = int(match.group(1))
+                consumed.add(i)
                 break
-        
-        # Capture remarks section (everything after RMK)
-        rmk_idx = self.raw.find('RMK ')
-        if rmk_idx != -1:
-            self.remarks = self.raw[rmk_idx + 4:]
+            match = re.match(r'^A(\d{4})$', part)
+            if match:
+                self.qnh = int(match.group(1))
+                consumed.add(i)
+                break
         
         # Parse CB details from remarks and full METAR
         self._parse_cb_details()

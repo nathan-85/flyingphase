@@ -127,6 +127,65 @@ class TestMETARParserMissingData(unittest.TestCase):
         self.assertEqual(m.wind_speed, 12)
 
 
+class TestMETARParserOrderIndependent(unittest.TestCase):
+    """Test order-independent token parsing (elements in non-standard order)."""
+
+    def test_nsc_before_visibility(self):
+        """NSC appearing before 4-digit visibility (real-world pilot input)."""
+        m = METARParser("05018G22KT NSC 9999 20/03 NOSIG")
+        self.assertEqual(m.icao, 'OEKF')  # defaulted
+        self.assertEqual(m.wind_dir, 50)
+        self.assertEqual(m.wind_speed, 18)
+        self.assertEqual(m.wind_gust, 22)
+        self.assertEqual(m.visibility_m, 10000)
+        self.assertEqual(len(m.clouds), 0)
+        self.assertEqual(m.temp, 20)
+        self.assertEqual(m.dewpoint, 3)
+        self.assertEqual(len(m.validate()), 0)
+
+    def test_cloud_before_visibility(self):
+        """BKN040 appearing before visibility."""
+        m = METARParser("METAR 05018G22KT BKN040 9999 20/03")
+        self.assertEqual(m.visibility_m, 10000)
+        self.assertEqual(len(m.clouds), 1)
+        self.assertEqual(m.clouds[0]['coverage'], 'BKN')
+        self.assertEqual(m.clouds[0]['height_ft'], 4000)
+
+    def test_weather_before_visibility(self):
+        """Weather code (HZ) appearing before visibility."""
+        m = METARParser("28015KT HZ 5000 SCT040 32/18 Q1012")
+        self.assertEqual(m.visibility_m, 5000)
+        self.assertIn('HZ', m.weather)
+        self.assertEqual(len(m.clouds), 1)
+
+    def test_no_station_no_timestamp(self):
+        """Bare minimum: just wind + vis + temp."""
+        m = METARParser("33012KT 9999 22/10")
+        self.assertEqual(m.icao, 'OEKF')
+        self.assertEqual(m.wind_dir, 330)
+        self.assertEqual(m.wind_speed, 12)
+        self.assertEqual(m.visibility_m, 10000)
+        self.assertEqual(m.temp, 22)
+
+    def test_weather_token_not_confused_with_icao(self):
+        """BLDU (blowing dust) should be weather, not ICAO code."""
+        m = METARParser("33012KT 3000 BLDU 35/10 Q1008")
+        self.assertEqual(m.icao, 'OEKF')  # not BLDU
+        self.assertIn('BLDU', m.weather)
+        self.assertEqual(m.visibility_m, 3000)
+
+    def test_standard_order_still_works(self):
+        """Standard ICAO order should still parse perfectly."""
+        m = METARParser("OEKF 311200Z 33012KT 9999 FEW080 SCT120 22/10 Q1018")
+        self.assertEqual(m.icao, 'OEKF')
+        self.assertEqual(m.obs_hour, 12)
+        self.assertEqual(m.wind_dir, 330)
+        self.assertEqual(m.visibility_m, 10000)
+        self.assertEqual(len(m.clouds), 2)
+        self.assertEqual(m.temp, 22)
+        self.assertEqual(m.qnh, 1018)
+
+
 class TestMETARParserCBDetection(unittest.TestCase):
     """Test enhanced CB detection (TS, remarks, distance/direction)."""
 
