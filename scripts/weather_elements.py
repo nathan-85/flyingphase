@@ -425,7 +425,7 @@ def _extract_period_elements(period: dict) -> List[Tuple[str, dict, str]]:
 
     vis = period.get('visibility_m')
     if vis is not None:
-        raw = 'CAVOK' if vis == 10000 else str(vis)
+        raw = '9999' if vis == 10000 else str(vis)
         elements.append(('visibility', {'meters': vis}, raw))
 
     if period.get('wind_speed') is not None:

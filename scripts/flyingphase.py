@@ -1579,46 +1579,51 @@ def format_output(phase_result: dict, metar: METARParser, runway: str,
     output.append(f"{emoji} KFAA Phase: {phase_result['phase']}")
     output.append("")
     
-    # Always show phase checks — actual phase first, then failed higher phases
+    # Always show phase checks — actual phase with reasons
     if phase_result.get('checks'):
         actual_phase = phase_result['phase']
-        output.append(f"✓ Phase Checks ({actual_phase}):")
+        checks_dict = phase_result['checks']
         
         # Determine the weather-determined phase (before bird/service caps)
         weather_phase = actual_phase
         if bird_info and bird_info.get('weather_phase'):
             weather_phase = bird_info['weather_phase']
-        # Service impacts may have also capped the phase
-        service_weather_phase = phase_result.get('_weather_phase', weather_phase)
         
-        # Show the actual determined weather phase checks first (the one that passed)
-        checks_dict = phase_result['checks']
-        if weather_phase in checks_dict:
-            output.append(f"  {weather_phase}:")
-            for check_name, passed in checks_dict[weather_phase]:
-                check_emoji = "✅" if passed else "❌"
-                output.append(f"    {check_emoji} {check_name}")
+        # Was the phase capped by bird activity or service impacts?
+        was_capped = (bird_info and bird_info.get('phase_impact')) or phase_result.get('_service_impacts')
         
-        # Show bird activity and service impacts as check items
-        if bird_info and bird_info.get('phase_impact'):
-            output.append(f"    ❌ Bird activity {bird_info['level']}")
-        for si in (phase_result.get('_service_impacts') or []):
-            if si.get('phase_impact'):
-                output.append(f"    ❌ {si['service']} — {si['action']}")
+        output.append(f"✓ Phase Checks ({actual_phase}):")
         
-        # Show failed higher phases (above the weather phase)
-        phase_order = ['UNRESTRICTED', 'RESTRICTED', 'FS VFR', 'VFR', 'IFR']
-        try:
-            wp_idx = phase_order.index(weather_phase)
-        except ValueError:
-            wp_idx = len(phase_order)
-        
-        for phase_name in phase_order[:wp_idx]:
-            if phase_name in checks_dict and phase_name != weather_phase:
-                output.append(f"  {phase_name}:")
-                for check_name, passed in checks_dict[phase_name]:
-                    if not passed:
-                        output.append(f"    ❌ {check_name}")
+        if was_capped and weather_phase != actual_phase:
+            # Show what capped the phase and from what
+            output.append(f"  Weather: {weather_phase} → capped to {actual_phase}:")
+            if bird_info and bird_info.get('phase_impact'):
+                output.append(f"    ❌ Bird activity {bird_info['level']}")
+            for si in (phase_result.get('_service_impacts') or []):
+                if si.get('phase_impact'):
+                    output.append(f"    ❌ {si['service']} — {si['action']}")
+        else:
+            # No capping — show the phase that matched, plus failed higher phases
+            if actual_phase in checks_dict:
+                output.append(f"  {actual_phase}:")
+                for check_name, passed in checks_dict[actual_phase]:
+                    check_emoji = "✅" if passed else "❌"
+                    output.append(f"    {check_emoji} {check_name}")
+            
+            # Show failed higher phases (why we didn't get a better phase)
+            phase_order = ['UNRESTRICTED', 'RESTRICTED', 'FS VFR', 'VFR', 'IFR']
+            try:
+                ap_idx = phase_order.index(actual_phase)
+            except ValueError:
+                ap_idx = len(phase_order)
+            
+            for phase_name in phase_order[:ap_idx]:
+                if phase_name in checks_dict and phase_name != actual_phase:
+                    failed = [(n, p) for n, p in checks_dict[phase_name] if not p]
+                    if failed:
+                        output.append(f"  {phase_name}:")
+                        for check_name, passed in failed:
+                            output.append(f"    ❌ {check_name}")
         
         output.append("")
     
