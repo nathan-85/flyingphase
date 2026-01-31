@@ -1629,11 +1629,10 @@ def format_output(phase_result: dict, metar: METARParser, runway: str,
         output.append(f"      CB: {'YES' if pr['has_cb'] else 'NO'}")
         output.append("")
 
-        # Alternate window
-        ae_str = ep['alt_end'].strftime('%H:%MZ')
-        output.append(f"  Alternate window [{now_str} → {ae_str}] — sources: ALL ({len(ep['alt_collection'])} elements):")
-        output.append("    Resolved:")
-        ar = ep['alt_resolved']
+        # OEKF full weather (incl TAF) — for alternate requirement
+        output.append(f"  OEKF full weather [{now_str} → {pe_str}] — all sources ({len(ep['oekf_full_collection'])} elements):")
+        output.append("    Resolved (used for alternate requirement):")
+        ar = ep['oekf_full_resolved']
         if ar['visibility_m'] is not None:
             v = ar['visibility_m']
             output.append(f"      Visibility: {v}m ({v/1000:.1f}km)")
@@ -1654,6 +1653,7 @@ def format_output(phase_result: dict, metar: METARParser, runway: str,
         if ar['weather']:
             output.append(f"      Weather: {' '.join(sorted(ar['weather']))}")
         output.append(f"      CB: {'YES' if ar['has_cb'] else 'NO'}")
+        output.append(f"  Alternate airfield window: [{now_str} → {ep['alt_end'].strftime('%H:%MZ')}] (180min)")
         output.append("")
     
     # Conditions
@@ -2105,16 +2105,21 @@ def main():
         collection.add_all(parse_pirep_elements(args.pirep))
 
     phase_end = _now + timedelta(minutes=args.local_lookahead)
+
+    # OEKF phase: METAR + WARNING + PIREP only, now → +local_lookahead
     phase_collection = collection.filter(
         window_start=_now, window_end=phase_end, sources=PHASE_SOURCES
     )
     phase_resolved = phase_collection.resolve(runway_heading=runway_heading)
 
-    alt_end = _now + timedelta(minutes=180)
-    alt_collection = collection.filter(
-        window_start=_now, window_end=alt_end, sources=ALTERNATE_SOURCES
+    # OEKF full weather (incl TAF): now → +local_lookahead — for alternate requirement check
+    oekf_full_collection = collection.filter(
+        window_start=_now, window_end=phase_end, sources=ALTERNATE_SOURCES
     )
-    alt_resolved = alt_collection.resolve(runway_heading=runway_heading)
+    oekf_full_resolved = oekf_full_collection.resolve(runway_heading=runway_heading)
+
+    # Alternate airfield window: now → +180min (used for alternate airfield assessment only)
+    alt_end = _now + timedelta(minutes=180)
 
     element_pipeline = {
         'now': _now,
@@ -2123,8 +2128,8 @@ def main():
         'collection': collection,
         'phase_collection': phase_collection,
         'phase_resolved': phase_resolved,
-        'alt_collection': alt_collection,
-        'alt_resolved': alt_resolved,
+        'oekf_full_collection': oekf_full_collection,
+        'oekf_full_resolved': oekf_full_resolved,
         'local_lookahead': args.local_lookahead,
     }
 
@@ -2134,30 +2139,30 @@ def main():
     # Propagate CAVOK flag from actual METAR report (not derived)
     phase_result['conditions']['cavok'] = metar.cavok
     
-    # Check if alternate required — using alt_resolved (ALL sources, now→+180min)
+    # Check if alternate required — using OEKF full weather (incl TAF), now → +local_lookahead
     alternate_required = False
     warnings = []
     
-    # Alternate vis/ceiling from the full pipeline (METAR + TAF + WARNING + PIREP)
-    alt_vis_m = alt_resolved.get('visibility_m')
-    alt_vis_km = alt_vis_m / 1000 if alt_vis_m else None
-    alt_ceiling = None
-    for c in alt_resolved.get('clouds', []):
+    # OEKF conditions including TAF within the local lookahead window
+    oekf_vis_m = oekf_full_resolved.get('visibility_m')
+    oekf_vis_km = oekf_vis_m / 1000 if oekf_vis_m else None
+    oekf_ceiling = None
+    for c in oekf_full_resolved.get('clouds', []):
         if c['coverage'] in ('BKN', 'OVC'):
-            alt_ceiling = c['height_ft']
+            oekf_ceiling = c['height_ft']
             break
     
-    if alt_vis_km is not None and alt_vis_km < 5:
+    if oekf_vis_km is not None and oekf_vis_km < 5:
         alternate_required = True
-        warnings.append(f"Visibility below VFR minimums ({alt_vis_km:.1f}km)")
+        warnings.append(f"OEKF visibility below VFR minimums ({oekf_vis_km:.1f}km)")
     
-    if alt_ceiling is not None and alt_ceiling < 1500:
+    if oekf_ceiling is not None and oekf_ceiling < 1500:
         alternate_required = True
-        warnings.append(f"Ceiling below VFR minimums ({alt_ceiling}ft)")
+        warnings.append(f"OEKF ceiling below VFR minimums ({oekf_ceiling}ft)")
     
-    if alt_resolved.get('has_cb'):
+    if oekf_full_resolved.get('has_cb'):
         alternate_required = True
-        warnings.append("CB/TS reported")
+        warnings.append("OEKF CB/TS reported or forecast")
     
     # Bird-Strike Risk Level (LOP 5-13)
     # UNRESTRICTED and RESTRICTED imply solo cadets — cannot be phased when birds > LOW.

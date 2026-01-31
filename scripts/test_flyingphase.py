@@ -1064,7 +1064,8 @@ class TestWeatherElementPipeline(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('Weather Element Pipeline', result.stdout)
         self.assertIn('Phase window', result.stdout)
-        self.assertIn('Alternate window', result.stdout)
+        self.assertIn('OEKF full weather', result.stdout)
+        self.assertIn('Alternate airfield window', result.stdout)
         self.assertIn('Resolved:', result.stdout)
 
     def test_verbose_pirep_elements_shown(self):
@@ -1130,7 +1131,7 @@ class TestWeatherElementPipeline(unittest.TestCase):
             if 'Phase window' in line:
                 in_phase_resolved = True
                 in_alt_resolved = False
-            elif 'Alternate window' in line:
+            elif 'OEKF full weather' in line:
                 in_alt_resolved = True
                 in_phase_resolved = False
             elif in_phase_resolved and 'Visibility:' in line:
