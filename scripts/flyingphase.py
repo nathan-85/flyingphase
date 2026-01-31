@@ -1526,7 +1526,7 @@ def format_output(phase_result: dict, metar: METARParser, runway: str,
                   best_alternate: dict = None, taf: TAFParser = None, 
                   warnings: List[str] = None, show_checks: bool = False,
                   bird_info: dict = None, sortie_window: dict = None,
-                  parse_warnings: List[str] = None) -> str:
+                  parse_warnings: List[str] = None, verbose: bool = False) -> str:
     """Format human-readable output."""
     output = []
     
@@ -1559,6 +1559,96 @@ def format_output(phase_result: dict, metar: METARParser, runway: str,
             for check_name, passed in checks:
                 check_emoji = "✅" if passed else "❌"
                 output.append(f"    {check_emoji} {check_name}")
+        output.append("")
+    
+    # Verbose: show all weather inputs for phase determination
+    if verbose and phase_result.get('metar_original'):
+        orig = phase_result['metar_original']
+        cond_final = phase_result['conditions']
+        
+        output.append("📋 Phase Determination Inputs:")
+        output.append("  ┌─ METAR observation (raw):")
+        
+        # Visibility
+        orig_vis_str = f"{orig['visibility_km']:.1f}km" if orig['visibility_km'] else "N/A"
+        if orig.get('cavok'):
+            orig_vis_str = "CAVOK (≥10km)"
+        output.append(f"  │  Vis: {orig_vis_str}")
+        
+        # Cloud
+        if orig.get('cavok'):
+            orig_cloud_str = "CAVOK"
+        elif not orig['clouds']:
+            orig_cloud_str = "NSC" if 'NSC' in metar.raw.upper() else "SKC"
+        else:
+            parts = []
+            for c in orig['clouds']:
+                s = f"{c['coverage']}{c['height_ft']//100:03d}"
+                if c.get('type'):
+                    s += c['type']
+                parts.append(s)
+            orig_cloud_str = " ".join(parts)
+        output.append(f"  │  Cloud: {orig_cloud_str}")
+        
+        # Wind
+        if orig['wind_dir'] is not None:
+            orig_wind_str = f"{orig['wind_dir']:03d}°/{orig['wind_speed']}kt"
+        else:
+            orig_wind_str = f"VRB/{orig['wind_speed']}kt"
+        if orig['wind_gust']:
+            orig_wind_str += f" G{orig['wind_gust']}"
+        output.append(f"  │  Wind: {orig_wind_str}")
+        
+        # Weather
+        if orig['weather']:
+            output.append(f"  │  Weather: {' '.join(orig['weather'])}")
+        
+        # Temp/QNH
+        extras = []
+        if orig['temp'] is not None:
+            extras.append(f"Temp: {orig['temp']}/{orig['dewpoint']}°C")
+        if orig['qnh'] is not None:
+            extras.append(f"QNH: Q{orig['qnh']}")
+        if extras:
+            output.append(f"  │  {' | '.join(extras)}")
+        
+        output.append("  │")
+        
+        # TAF overlay
+        if phase_result.get('taf_overlay'):
+            output.append("  ├─ TAF +30min overlay (worst-case):")
+            for factor in phase_result['taf_overlay']:
+                output.append(f"  │    • {factor}")
+            output.append("  │")
+        else:
+            output.append("  ├─ TAF overlay: none (no TAF or no worse conditions)")
+            output.append("  │")
+        
+        # Combined final values
+        output.append("  └─ Combined (used for phase):")
+        final_vis_str = f"{cond_final['visibility_km']:.1f}km" if cond_final['visibility_km'] else "N/A"
+        
+        if cond_final.get('cavok'):
+            final_cloud_str = "CAVOK"
+        elif not cond_final['clouds']:
+            final_cloud_str = "NSC/SKC"
+        else:
+            parts = []
+            for c in cond_final['clouds']:
+                s = f"{c['coverage']}{c['height_ft']//100:03d}"
+                if c.get('type'):
+                    s += c['type']
+                parts.append(s)
+            final_cloud_str = " ".join(parts)
+        
+        if cond_final['wind_dir'] is not None:
+            final_wind_str = f"{cond_final['wind_dir']:03d}°/{cond_final['wind_speed']}kt"
+        else:
+            final_wind_str = f"VRB/{cond_final['wind_speed']}kt"
+        if cond_final['wind_gust']:
+            final_wind_str += f" G{cond_final['wind_gust']}"
+        
+        output.append(f"       Vis: {final_vis_str} | Cloud: {final_cloud_str} | Wind: {final_wind_str}")
         output.append("")
     
     # Conditions
@@ -1741,6 +1831,80 @@ def format_output(phase_result: dict, metar: METARParser, runway: str,
     
     output.append("")
     
+    # Verbose: show alternate weather inputs
+    if verbose and checked_alternates:
+        output.append("📋 Alternate Assessment Inputs:")
+        for alt in checked_alternates:
+            status = "✅" if alt.get('suitable') else "❌"
+            output.append(f"  {status} {alt['icao']} ({alt['name']}):")
+            
+            taf_raw = alt.get('taf_raw')
+            if taf_raw:
+                # Parse the TAF to show structured conditions
+                alt_taf = TAFParser(taf_raw)
+                bp = alt_taf.base_period
+                if bp:
+                    vis_str = f"{bp['visibility_m']}m" if bp.get('visibility_m') else "N/A"
+                    wind_str = ""
+                    if bp.get('wind_dir') is not None:
+                        wind_str = f"{bp['wind_dir']:03d}°/{bp['wind_speed']}kt"
+                        if bp.get('wind_gust'):
+                            wind_str += f" G{bp['wind_gust']}"
+                    elif bp.get('wind_speed') is not None:
+                        wind_str = f"VRB/{bp['wind_speed']}kt"
+                    
+                    cloud_parts = []
+                    for c in bp.get('clouds', []):
+                        s = f"{c['coverage']}{c['height_ft']//100:03d}"
+                        if c.get('type'):
+                            s += c['type']
+                        cloud_parts.append(s)
+                    cloud_str = " ".join(cloud_parts) if cloud_parts else "NSC/SKC"
+                    
+                    output.append(f"    TAF base: Vis {vis_str} | Cloud: {cloud_str} | Wind: {wind_str}")
+                
+                # Show BECMG/TEMPO periods
+                for becmg in alt_taf.becmg_periods:
+                    parts = []
+                    if becmg.get('visibility_m'):
+                        parts.append(f"vis {becmg['visibility_m']}m")
+                    if becmg.get('clouds'):
+                        for c in becmg['clouds']:
+                            parts.append(f"{c['coverage']}{c['height_ft']//100:03d}")
+                    if becmg.get('wind_speed'):
+                        parts.append(f"wind {becmg.get('wind_dir', '???')}/{becmg['wind_speed']}kt")
+                    if parts:
+                        output.append(f"    BECMG: {', '.join(parts)}")
+                
+                for tempo in alt_taf.tempo_periods:
+                    parts = []
+                    if tempo.get('visibility_m'):
+                        parts.append(f"vis {tempo['visibility_m']}m")
+                    if tempo.get('clouds'):
+                        for c in tempo['clouds']:
+                            parts.append(f"{c['coverage']}{c['height_ft']//100:03d}")
+                    if tempo.get('wind_speed'):
+                        parts.append(f"wind {tempo.get('wind_dir', '???')}/{tempo['wind_speed']}kt")
+                    if parts:
+                        output.append(f"    TEMPO: {', '.join(parts)}")
+            else:
+                output.append(f"    TAF: not available")
+            
+            if alt.get('runway'):
+                xw = f"⨯ {alt.get('crosswind', 0):.1f}kt" if alt.get('crosswind') is not None else ""
+                tw = f" ↓ {alt.get('tailwind', 0):.1f}kt" if alt.get('tailwind') and alt['tailwind'] > 0 else ""
+                output.append(f"    RWY {alt['runway']}: {xw}{tw}")
+            
+            if alt.get('approach'):
+                app = alt['approach']
+                output.append(f"    Approach: {app['type']} (mins: {app['minimums']['ceiling_ft']}ft / {app['minimums']['visibility_m']}m)")
+            
+            for r in alt.get('reasons', []):
+                output.append(f"    ❌ {r}")
+            for w in alt.get('warnings', []):
+                output.append(f"    ⚠️ {w}")
+        output.append("")
+    
     # Parse warnings (non-critical)
     if parse_warnings:
         output.append("🔍 Parse Notes:")
@@ -1770,6 +1934,7 @@ def main():
     parser.add_argument('--solo', action='store_true', help='Solo cadet (for fuel calculation)')
     parser.add_argument('--opposite', action='store_true', help='Diverting from opposite side')
     parser.add_argument('--checks', action='store_true', help='Show phase condition checks')
+    parser.add_argument('--verbose', action='store_true', help='Show all weather inputs for phase and alternate determination')
     parser.add_argument('--json', action='store_true', help='Output in JSON format')
     parser.add_argument('--no-cache', action='store_true', help='Bypass TAF cache')
     parser.add_argument('--notams', action='store_true', help='Check NOTAMs for alternate airfields')
@@ -1865,6 +2030,21 @@ def main():
     else:
         runway, runway_heading = select_runway(metar, airfield_data, 'OEKF')
     
+    # Snapshot raw METAR observation before TAF overlay (for verbose output)
+    metar_original = {
+        'visibility_m': metar.visibility_m,
+        'visibility_km': metar.visibility_m / 1000 if metar.visibility_m else None,
+        'clouds': [dict(c) for c in metar.clouds],
+        'wind_dir': metar.wind_dir,
+        'wind_speed': metar.wind_speed,
+        'wind_gust': metar.wind_gust,
+        'cavok': metar.cavok,
+        'weather': list(metar.weather),
+        'temp': metar.temp,
+        'dewpoint': metar.dewpoint,
+        'qnh': metar.qnh,
+    }
+    
     # Apply TAF planning window overlay (worst-case next 30 min)
     taf_overlay_factors = []
     if taf and metar.obs_hour is not None:
@@ -1884,6 +2064,9 @@ def main():
     # Tag overlay factors onto the phase result for output
     if taf_overlay_factors:
         phase_result['taf_overlay'] = taf_overlay_factors
+    
+    # Store original METAR for verbose output
+    phase_result['metar_original'] = metar_original
     
     # Check if alternate required (conditions already reflect TAF overlay)
     alternate_required = False
@@ -2191,7 +2374,8 @@ def main():
                 'fuel_lbs': fuel_lbs,
                 'fuel_explanation': fuel_explanation,
                 'reasons': suitability.get('reasons', []),
-                'warnings': suitability.get('warnings', [])
+                'warnings': suitability.get('warnings', []),
+                'taf_raw': alt_taf_str,
             }
             
             checked_alternates.append(alt_result)
@@ -2229,7 +2413,8 @@ def main():
             show_checks=True,
             bird_info=bird_info,
             sortie_window=sortie_window,
-            parse_warnings=warning_issues if warning_issues else None
+            parse_warnings=warning_issues if warning_issues else None,
+            verbose=args.verbose
         )
         # Append NOTAM results if checked
         if notam_results and notam_results.get('status') == 'ok':
