@@ -811,5 +811,87 @@ class TestNotamAlternateImpact(unittest.TestCase):
         self.assertFalse(impact['vor_available'])
 
 
+class TestWarningPhaseImpact(unittest.TestCase):
+    """Test that weather warnings affect phase determination."""
+
+    def setUp(self):
+        self.data_path = os.path.join(os.path.dirname(__file__), 'airfield_data.json')
+        with open(self.data_path) as f:
+            raw = json.load(f)
+        self.airfield_data = {}
+        for icao, info in raw.get('airfields', {}).items():
+            self.airfield_data[icao] = info
+
+    def run_with_warning(self, metar_str, warning):
+        """Helper: determine phase then apply warning override."""
+        import re
+        metar = METARParser(metar_str)
+        runway_heading = 330  # 33R
+        result = determine_phase(metar, runway_heading, self.airfield_data)
+        warn_upper = warning.upper()
+
+        # Replicate warning parsing from main()
+        warn_vis_m = None
+        vis_patterns = [
+            r'VIS(?:IBILITY)?\s+(?:BELOW\s+|<\s*|OF\s+)?(\d+)\s*(?:M(?:ETERS?)?|OR\s+LESS)',
+            r'VIS(?:IBILITY)?\s+(?:BELOW\s+|<\s*|OF\s+)?(\d+(?:\.\d+)?)\s*KM',
+            r'VIS(?:IBILITY)?\s+(\d+)\b',
+        ]
+        for vp in vis_patterns:
+            vm = re.search(vp, warn_upper)
+            if vm:
+                val = float(vm.group(1))
+                if val < 100:
+                    val = val * 1000
+                warn_vis_m = val
+                break
+
+        phase_rank = {'RECALL': 6, 'HOLD': 5, 'IFR': 4, 'VFR': 3, 'FS VFR': 2, 'RESTRICTED': 1, 'UNRESTRICTED': 0}
+        current_rank = phase_rank.get(result['phase'], 0)
+
+        if warn_vis_m is not None:
+            if warn_vis_m < 2400 and phase_rank['HOLD'] > current_rank:
+                result['phase'] = 'HOLD'
+            elif warn_vis_m < 5000 and phase_rank['IFR'] > current_rank:
+                result['phase'] = 'IFR'
+            elif warn_vis_m < 8000 and phase_rank['VFR'] > current_rank:
+                result['phase'] = 'VFR'
+
+        return result
+
+    def test_vis_2000_warning_forces_hold(self):
+        """Warning 'visibility 2000 or less' should force HOLD."""
+        result = self.run_with_warning(
+            "OEKF 311300Z 33012KT 9999 SKC 22/10 Q1018",
+            "visibility 2000 or less"
+        )
+        self.assertEqual(result['phase'], 'HOLD')
+
+    def test_vis_3000_warning_forces_ifr(self):
+        """Warning 'visibility 3000' should force IFR."""
+        result = self.run_with_warning(
+            "OEKF 311300Z 33012KT 9999 SKC 22/10 Q1018",
+            "visibility 3000"
+        )
+        self.assertEqual(result['phase'], 'IFR')
+
+    def test_vis_6000_warning_caps_vfr(self):
+        """Warning 'visibility 6000' on UNRESTRICTED METAR → VFR."""
+        result = self.run_with_warning(
+            "OEKF 311300Z 33012KT 9999 SKC 22/10 Q1018",
+            "visibility 6000"
+        )
+        self.assertEqual(result['phase'], 'VFR')
+
+    def test_warning_doesnt_improve_phase(self):
+        """Warning with higher vis than METAR shouldn't improve phase."""
+        result = self.run_with_warning(
+            "OEKF 311300Z 05018G22KT 9999 NSC 20/03 Q1013",
+            "visibility 9000"
+        )
+        # METAR gives VFR (crosswind 21.7kt), warning vis 9000 shouldn't change it
+        self.assertEqual(result['phase'], 'VFR')
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

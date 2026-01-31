@@ -1937,15 +1937,98 @@ def main():
             phase_result['restrictions']['note'] = 'SEVERE BIRDS: No take-offs. Single aircraft straight-in recovery only.'
             warnings.append(f'🐦 Bird-Strike Risk: SEVERE — NO TAKE-OFFS, straight-in recovery only')
     
-    # Add weather warning
+    # Add weather warning — parse and apply to phase determination
     if args.warning:
         warnings.append(f"Weather warning: {args.warning}")
-        if 'CB' in args.warning.upper() or '30NM' in args.warning.upper():
+        warn_upper = args.warning.upper()
+        
+        # CB/TS in warning → RECALL
+        # Use word boundary for TS to avoid false positives (e.g., "gusts" contains "TS")
+        if re.search(r'\bCB\b', warn_upper) or 'THUNDERSTORM' in warn_upper or re.search(r'\bTS\b', warn_upper):
             alternate_required = True
             if phase_result['phase'] not in ['RECALL', 'HOLD']:
-                # CB within 30NM triggers RECALL
                 phase_result['phase'] = 'RECALL'
-                phase_result['reasons'].append('CB within 30NM')
+                phase_result['reasons'].append('⚠️ Warning: CB/TS activity')
+        
+        # Parse visibility from warning text
+        # Patterns: "visibility 2000 or less", "vis below 3000", "vis 1500m", "vis < 5km"
+        warn_vis_m = None
+        vis_patterns = [
+            r'VIS(?:IBILITY)?\s+(?:BELOW\s+|<\s*|OF\s+)?(\d+)\s*(?:M(?:ETERS?)?|OR\s+LESS)',
+            r'VIS(?:IBILITY)?\s+(?:BELOW\s+|<\s*|OF\s+)?(\d+(?:\.\d+)?)\s*KM',
+            r'VIS(?:IBILITY)?\s+(\d+)\b',
+            r'(\d+)\s*(?:M\b|METERS?)\s+(?:OR\s+LESS|VISIBILITY)',
+        ]
+        for vp in vis_patterns:
+            vm = re.search(vp, warn_upper)
+            if vm:
+                val = float(vm.group(1))
+                if 'KM' in (vm.group(0) if hasattr(vm, 'group') else ''):
+                    val = val * 1000
+                # Check if it looks like meters (>= 100) or km (< 100)
+                if val < 100:
+                    val = val * 1000  # Likely km
+                warn_vis_m = val
+                break
+        
+        # Parse wind from warning text
+        # Patterns: "wind 35kt", "gusts 40", "wind exceeding 30"
+        warn_wind = None
+        wind_patterns = [
+            r'(?:WIND|GUST)S?\s+(?:EXCEEDING\s+|ABOVE\s+|>?\s*)(\d+)\s*(?:KT|KNOTS?)?',
+            r'(\d+)\s*(?:KT|KNOTS?)\s+(?:WIND|GUST)',
+        ]
+        for wp in wind_patterns:
+            wm = re.search(wp, warn_upper)
+            if wm:
+                warn_wind = int(wm.group(1))
+                break
+        
+        # Dust/sand storms → assume low visibility
+        if any(x in warn_upper for x in ['DUST STORM', 'SANDSTORM', 'SAND STORM', 'BLDU', 'BLSA', 'DS', 'SS']):
+            if warn_vis_m is None:
+                warn_vis_m = 1000  # Assume poor vis with dust/sand storm warning
+        
+        # Phase hierarchy (most restrictive first): RECALL > HOLD > IFR > VFR > FS VFR > RESTRICTED > UNRESTRICTED
+        phase_rank = {'RECALL': 6, 'HOLD': 5, 'IFR': 4, 'VFR': 3, 'FS VFR': 2, 'RESTRICTED': 1, 'UNRESTRICTED': 0}
+        current_rank = phase_rank.get(phase_result['phase'], 0)
+        
+        # Apply warning visibility to phase
+        if warn_vis_m is not None:
+            if warn_vis_m < 2400:  # Below IFR minimums → HOLD
+                new_rank = phase_rank['HOLD']
+                if new_rank > current_rank:
+                    phase_result['phase'] = 'HOLD'
+                    phase_result['reasons'].append(f'⚠️ Warning: visibility {int(warn_vis_m)}m — below IFR minimums')
+            elif warn_vis_m < 5000:  # Below VFR → IFR
+                new_rank = phase_rank['IFR']
+                if new_rank > current_rank:
+                    phase_result['phase'] = 'IFR'
+                    phase_result['reasons'].append(f'⚠️ Warning: visibility {int(warn_vis_m)}m — IFR conditions')
+                    phase_result['restrictions'] = {'solo_cadets': False, 'first_solo': False}
+            elif warn_vis_m < 8000:  # Below UNRESTRICTED/RESTRICTED → VFR
+                new_rank = phase_rank['VFR']
+                if new_rank > current_rank:
+                    phase_result['phase'] = 'VFR'
+                    phase_result['reasons'].append(f'⚠️ Warning: visibility {int(warn_vis_m)}m — VFR only')
+                    phase_result['restrictions'] = {'solo_cadets': False, 'first_solo': False}
+        
+        # Apply warning wind to phase
+        if warn_wind is not None:
+            if warn_wind > 35:
+                if phase_rank['RECALL'] > current_rank:
+                    phase_result['phase'] = 'RECALL'
+                    phase_result['reasons'].append(f'⚠️ Warning: wind {warn_wind}kt exceeds 35kt')
+            elif warn_wind > 30:
+                if phase_rank['HOLD'] > current_rank:
+                    phase_result['phase'] = 'HOLD'
+                    phase_result['reasons'].append(f'⚠️ Warning: wind {warn_wind}kt exceeds 30kt')
+            elif warn_wind > 25:
+                new_rank = phase_rank['VFR']
+                if new_rank > current_rank:
+                    phase_result['phase'] = 'VFR'
+                    phase_result['reasons'].append(f'⚠️ Warning: wind {warn_wind}kt — VFR only')
+                    phase_result['restrictions'] = {'solo_cadets': False, 'first_solo': False}
     
     # Sortie time window analysis
     sortie_window = None
