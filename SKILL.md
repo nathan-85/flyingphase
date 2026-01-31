@@ -9,45 +9,74 @@ Determines the current flying phase at King Faisal Air Academy (OEKF) from a MET
 
 ## Trigger
 
-`/airfieldphase` followed by a METAR string. Also triggers on natural language like "what's the phase" or "check the weather phase".
+`/airfieldphase` followed by structured input. Also triggers on natural language like "what's the phase" or "check the weather phase".
 
-## Usage
+## Input Format
 
-Run the script with a METAR string:
+Users provide data in this format:
 
-```bash
-python3 scripts/flyingphase.py "METAR OEKF 311200Z 33012KT 3000 BKN012 18/12 Q1012"
+```
+/airfieldphase METAR: <metar string> TAF: <taf string> WARNINGS: <warning text> NOTES: <notes>
 ```
 
-### Options
+All fields except METAR are optional. Examples:
 
-| Flag | Purpose |
-|------|---------|
-| `--rwy 33L` | Specify runway (auto-selects from wind if omitted) |
-| `--solo` | Solo cadet fuel adjustment (+100 lbs) |
-| `--opposite` | Opposite-side divert adjustment (+30 lbs) |
-| `--warning "CB 25NM SW"` | Add weather warning text |
-| `--checks` | Show ✅/❌ for each phase condition |
-| `--json` | JSON output for programmatic use |
-
-### With TAF (for divert planning)
-
-```bash
-python3 scripts/flyingphase.py \
-  "METAR OEKF 311200Z 28018G25KT 5000 SCT040 32/18 Q1012" \
-  "TAF OEKF 302200Z 3100/3124 28015KT 6000 SCT050 BECMG 3106/3108 15010KT 9999 FEW050" \
-  --solo --checks
+```
+/airfieldphase METAR: OEKF 311200Z 33012KT 3000 BKN012 18/12 Q1012
 ```
 
-## What It Does
+```
+/airfieldphase METAR: OEKF 311200Z 28018G25KT 5000 SCT040 32/18 Q1012 TAF: OEKF 302200Z 3100/3124 28015KT 6000 SCT050 BECMG 3106/3108 15010KT WARNINGS: CB reported 25NM southwest NOTES: RADAR procedures only, No medical
+```
 
-1. **Parses METAR** — wind, visibility, clouds, temperature, QNH (handles CAVOK, NSC, variable winds, gusts, RVR)
-2. **Determines phase** from LOP Table 5-4: UNRESTRICTED → RESTRICTED → FS VFR → VFR → IFR → HOLD → RECALL
-3. **Auto-selects runway** based on wind (or manual `--rwy`)
-4. **Calculates crosswind/headwind/tailwind** components (gusts = effective wind)
-5. **Fetches live TAFs** from aviationweather.gov for alternate airfields
-6. **Selects best alternate** — checks suitability (ceiling, vis, crosswind, approach availability)
-7. **Calculates divert fuel** — base + solo + headwind adjustments
+## Parsing the User Input
+
+Extract these fields from the user's message:
+
+1. **METAR** (required) — the OEKF METAR string after `METAR:`
+2. **TAF** (optional) — the OEKF TAF string after `TAF:`
+3. **WARNINGS** (optional) — weather warning text after `WARNINGS:`
+4. **NOTES** (optional) — operational notes after `NOTES:` (comma-separated items like "RADAR procedures only", "No medical")
+
+If the user omits labels and just pastes a raw METAR string, treat the entire input as the METAR.
+
+## Running the Script
+
+```bash
+python3 scripts/flyingphase.py "<METAR>" ["<TAF>"] [--warning "<warning text>"] [--notes "note1" "note2"] [--rwy 33L] [--solo] [--checks]
+```
+
+### Arguments
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| METAR string | Yes | First positional arg — the OEKF METAR |
+| TAF string | No | Second positional arg — the OEKF TAF |
+| `--warning` | No | Weather warning text |
+| `--notes` | No | Operational notes (multiple strings) |
+| `--rwy 33L` | No | Runway override (auto-selects from wind if omitted) |
+| `--solo` | No | Solo cadet fuel adjustment (+100 lbs) |
+| `--opposite` | No | Opposite-side divert fuel (+30 lbs) |
+| `--checks` | No | Show ✅/❌ for each phase condition |
+| `--json` | No | JSON output |
+
+### Example Command Construction
+
+User sends:
+```
+/airfieldphase METAR: OEKF 311200Z 28018G25KT 5000 SCT040 32/18 Q1012 TAF: OEKF 302200Z 3100/3124 28015KT 6000 SCT050 WARNINGS: CB 25NM SW NOTES: RADAR only, No medical
+```
+
+Run:
+```bash
+python3 scripts/flyingphase.py "METAR OEKF 311200Z 28018G25KT 5000 SCT040 32/18 Q1012" "TAF OEKF 302200Z 3100/3124 28015KT 6000 SCT050" --warning "CB 25NM SW" --notes "RADAR only" "No medical"
+```
+
+Note: Prefix the METAR string with "METAR " and TAF string with "TAF " if the user didn't include those prefixes.
+
+## Output
+
+The script outputs a formatted phase report. Return it directly to the user — do not modify or summarise it.
 
 ## Phases (LOP Table 5-4)
 
@@ -63,31 +92,15 @@ python3 scripts/flyingphase.py \
 
 ## Alternates (Priority Order)
 
-| # | ICAO | Name | Fuel | Distance |
-|---|------|------|------|----------|
-| 1 | OEGS | Gassim | 480 lbs | 78 NM |
-| 2 | OESD | King Saud AB | 530 lbs | 110 NM |
-| 3 | OERK | King Khalid Intl | 530 lbs | 107 NM |
-| 4 | OEDM | Dawadmi | 540 lbs | 114 NM |
-| 5 | OEPS | Prince Sultan AB | 610 lbs | 177 NM |
-| 6 | OEHL | Hail | 660 lbs | 205 NM |
-| 7 | OEAH | Al-Ahsa | 690 lbs | 238 NM |
-| 8 | OEDR | Dhahran | 700 lbs | 266 NM |
-
-## Airfield Data
-
-All runway headings, approach types, and minimums are in `scripts/airfield_data.json`. Approach minimums sourced from Saudi GACA AIP where available (OEGS, OERK confirmed). Military field minimums are conservative estimates — see TODO.md for status.
+OEGS (480 lbs/78NM), OESD (530/110), OERK (530/107), OEDM (540/114), OEPS (610/177), OEHL (660/205), OEAH (690/238), OEDR (700/266)
 
 ## Dependencies
 
-Python 3.7+ stdlib only. No pip packages needed. Internet connection for live TAF fetching (optional — works without, just skips alternate TAF analysis).
+Python 3.7+ stdlib only. Internet for live TAF fetch (optional).
 
-## Setup for Telegram
+## Telegram Setup
 
-Add to your Clawdbot config under `channels.telegram.customCommands`:
-
+Add to `channels.telegram.customCommands`:
 ```json
 { "command": "airfieldphase", "description": "KFAA flying phase from METAR" }
 ```
-
-Then restart the gateway. The `/airfieldphase` command will appear in Telegram's command menu.

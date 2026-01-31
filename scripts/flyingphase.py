@@ -1106,6 +1106,7 @@ def main():
     parser.add_argument('taf', nargs='?', help='TAF string for OEKF (optional)')
     parser.add_argument('--rwy', '--runway', dest='runway', help='Runway in use (e.g., 33L)')
     parser.add_argument('--warning', help='Weather warning string')
+    parser.add_argument('--notes', nargs='*', help='Operational notes (e.g., "RADAR procedures only" "No medical")')
     parser.add_argument('--solo', action='store_true', help='Solo cadet (for fuel calculation)')
     parser.add_argument('--opposite', action='store_true', help='Diverting from opposite side')
     parser.add_argument('--checks', action='store_true', help='Show phase condition checks')
@@ -1284,7 +1285,8 @@ def main():
             'alternate_required': alternate_required,
             'best_alternate': best_alternate,
             'checked_alternates': checked_alternates,
-            'warnings': warnings
+            'warnings': warnings,
+            'notes': args.notes or []
         }
         print(json.dumps(json_output, indent=2))
     else:
@@ -1296,6 +1298,12 @@ def main():
             warnings=warnings if warnings else None,
             show_checks=args.checks
         )
+        # Append operational notes if provided
+        if args.notes:
+            output += "\n📋 Operational Notes:"
+            for note in args.notes:
+                output += f"\n  • {note}"
+            output += "\n"
         print(output)
 
 
