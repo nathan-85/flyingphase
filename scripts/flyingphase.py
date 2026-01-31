@@ -1456,10 +1456,16 @@ def format_output(phase_result: dict, metar: METARParser, runway: str,
                     becmg_ceiling = cloud['height_ft']
                     break
             
-            if becmg_vis < base_vis or (becmg_ceiling and base_ceiling and becmg_ceiling < base_ceiling):
-                trend = "DETERIORATING"
-            elif becmg_vis > base_vis or (becmg_ceiling and base_ceiling and becmg_ceiling > base_ceiling):
-                trend = "IMPROVING"
+            if becmg_vis is not None and base_vis is not None:
+                if becmg_vis < base_vis:
+                    trend = "DETERIORATING"
+                elif becmg_vis > base_vis:
+                    trend = "IMPROVING"
+            if becmg_ceiling and base_ceiling:
+                if becmg_ceiling < base_ceiling:
+                    trend = "DETERIORATING"
+                elif becmg_ceiling > base_ceiling:
+                    trend = "IMPROVING"
         
         output.append(f"  Trend: {trend}")
         
