@@ -21,8 +21,15 @@ import sys
 import time
 import urllib.request
 import urllib.error
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
+
+from weather_elements import (
+    WeatherCollection, parse_metar_elements, parse_taf_elements,
+    parse_warning_elements, parse_pirep_elements,
+    PHASE_SOURCES, ALTERNATE_SOURCES, format_element_value
+)
 
 # TAF cache configuration
 TAF_CACHE_DIR = "/tmp/flyingphase_taf_cache"
@@ -158,8 +165,7 @@ class METARParser:
                 break
         
         if self.obs_hour is None:
-            from datetime import datetime as _dt, timezone as _tz
-            _now = _dt.now(_tz.utc)
+            _now = datetime.now(timezone.utc)
             self.obs_day = _now.day
             self.obs_hour = _now.hour
             self.obs_minute = _now.minute
@@ -1526,12 +1532,12 @@ def format_output(phase_result: dict, metar: METARParser, runway: str,
                   best_alternate: dict = None, taf: TAFParser = None, 
                   warnings: List[str] = None, show_checks: bool = False,
                   bird_info: dict = None, sortie_window: dict = None,
-                  parse_warnings: List[str] = None, verbose: bool = False) -> str:
+                  parse_warnings: List[str] = None, verbose: bool = False,
+                  element_pipeline: dict = None) -> str:
     """Format human-readable output."""
     output = []
     
     # Current Zulu time stamp
-    from datetime import datetime, timezone
     zulu_now = datetime.now(timezone.utc)
     output.append(f"🕐 {zulu_now.strftime('%d %b %Y %H%MZ')}")
     output.append("")
@@ -1621,6 +1627,70 @@ def format_output(phase_result: dict, metar: METARParser, runway: str,
                 output.append(f"       • {factor}")
         else:
             output.append("  └─ TAF: none provided (alternates use OEKF wind estimate)")
+        output.append("")
+    
+    # Weather Element Pipeline (verbose)
+    if verbose and element_pipeline:
+        ep = element_pipeline
+        output.append("📋 Weather Element Pipeline:")
+        output.append(f"  All elements ({len(ep['collection'])} total):")
+        for line in ep['collection'].describe():
+            output.append(line)
+        output.append("")
+
+        # Phase window
+        now_str = ep['now'].strftime('%H:%MZ')
+        pe_str = ep['phase_end'].strftime('%H:%MZ')
+        output.append(f"  Phase window [{now_str} → {pe_str}] — sources: METAR, WARNING, PIREP ({len(ep['phase_collection'])} elements):")
+        output.append("    Resolved:")
+        pr = ep['phase_resolved']
+        if pr['visibility_m'] is not None:
+            v = pr['visibility_m']
+            output.append(f"      Visibility: {v}m ({v/1000:.1f}km)")
+        if pr['wind']:
+            w = pr['wind']
+            d = f"{w['direction']:03d}°" if w.get('direction') is not None else "VRB"
+            s = f"{w['speed']}kt"
+            g = f" G{w['gust']}" if w.get('gust') else ""
+            output.append(f"      Wind: {d}/{s}{g}")
+        if pr['clouds']:
+            parts = []
+            for c in pr['clouds']:
+                cs = f"{c['coverage']}{c['height_ft']//100:03d}"
+                if c.get('cb'):
+                    cs += 'CB'
+                parts.append(cs)
+            output.append(f"      Cloud: {' '.join(parts)}")
+        if pr['weather']:
+            output.append(f"      Weather: {' '.join(sorted(pr['weather']))}")
+        output.append(f"      CB: {'YES' if pr['has_cb'] else 'NO'}")
+        output.append("")
+
+        # Alternate window
+        ae_str = ep['alt_end'].strftime('%H:%MZ')
+        output.append(f"  Alternate window [{now_str} → {ae_str}] — sources: ALL ({len(ep['alt_collection'])} elements):")
+        output.append("    Resolved:")
+        ar = ep['alt_resolved']
+        if ar['visibility_m'] is not None:
+            v = ar['visibility_m']
+            output.append(f"      Visibility: {v}m ({v/1000:.1f}km)")
+        if ar['wind']:
+            w = ar['wind']
+            d = f"{w['direction']:03d}°" if w.get('direction') is not None else "VRB"
+            s = f"{w['speed']}kt"
+            g = f" G{w['gust']}" if w.get('gust') else ""
+            output.append(f"      Wind: {d}/{s}{g}")
+        if ar['clouds']:
+            parts = []
+            for c in ar['clouds']:
+                cs = f"{c['coverage']}{c['height_ft']//100:03d}"
+                if c.get('cb'):
+                    cs += 'CB'
+                parts.append(cs)
+            output.append(f"      Cloud: {' '.join(parts)}")
+        if ar['weather']:
+            output.append(f"      Weather: {' '.join(sorted(ar['weather']))}")
+        output.append(f"      CB: {'YES' if ar['has_cb'] else 'NO'}")
         output.append("")
     
     # Conditions
@@ -1912,6 +1982,9 @@ def main():
     parser.add_argument('--notams', action='store_true', help='Check NOTAMs for alternate airfields')
     parser.add_argument('--sortie-time', dest='sortie_time',
                         help='Sortie time in local (AST) HHmm format, e.g. "1030" for 10:30 local')
+    parser.add_argument('--local-lookahead', dest='local_lookahead', type=int, default=60,
+                        help='OEKF phase lookahead window in minutes (default: 60)')
+    parser.add_argument('--pirep', help='PIREP text input (e.g. "UA /OV OEKF /FL050 /SK BKN040CB /WX TS")')
     
     args = parser.parse_args()
     
@@ -2002,6 +2075,41 @@ def main():
     else:
         runway, runway_heading = select_runway(metar, airfield_data, 'OEKF')
     
+    # --- Build WeatherCollection (parallel pipeline) ---
+    _now = datetime.now(timezone.utc)
+    collection = WeatherCollection()
+    collection.add_all(parse_metar_elements(metar))
+    if taf:
+        collection.add_all(parse_taf_elements(taf))
+    if args.warning:
+        collection.add_all(parse_warning_elements(args.warning))
+    if args.pirep:
+        collection.add_all(parse_pirep_elements(args.pirep))
+
+    phase_end = _now + timedelta(minutes=args.local_lookahead)
+    phase_collection = collection.filter(
+        window_start=_now, window_end=phase_end, sources=PHASE_SOURCES
+    )
+    phase_resolved = phase_collection.resolve(runway_heading=runway_heading)
+
+    alt_end = _now + timedelta(minutes=180)
+    alt_collection = collection.filter(
+        window_start=_now, window_end=alt_end, sources=ALTERNATE_SOURCES
+    )
+    alt_resolved = alt_collection.resolve(runway_heading=runway_heading)
+
+    element_pipeline = {
+        'now': _now,
+        'phase_end': phase_end,
+        'alt_end': alt_end,
+        'collection': collection,
+        'phase_collection': phase_collection,
+        'phase_resolved': phase_resolved,
+        'alt_collection': alt_collection,
+        'alt_resolved': alt_resolved,
+        'local_lookahead': args.local_lookahead,
+    }
+
     # Snapshot raw METAR observation (for verbose output)
     metar_original = {
         'visibility_m': metar.visibility_m,
@@ -2384,7 +2492,8 @@ def main():
             bird_info=bird_info,
             sortie_window=sortie_window,
             parse_warnings=warning_issues if warning_issues else None,
-            verbose=args.verbose
+            verbose=args.verbose,
+            element_pipeline=element_pipeline
         )
         # Append NOTAM results if checked
         if notam_results and notam_results.get('status') == 'ok':

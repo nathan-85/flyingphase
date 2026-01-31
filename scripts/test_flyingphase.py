@@ -1042,5 +1042,122 @@ class TestWarningPhaseImpact(unittest.TestCase):
         self.assertEqual(result['phase'], 'VFR')
 
 
+class TestWeatherElementPipeline(unittest.TestCase):
+    """Test WeatherElement pipeline integration in main flow."""
+
+    def test_pirep_arg_accepted(self):
+        """--pirep should be accepted without error."""
+        import subprocess
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).parent / 'flyingphase.py'),
+             'OEKF 310600Z 33012KT 9999 FEW080 22/10 Q1018',
+             '--pirep', 'UA /OV OEKF /FL050 /SK BKN040CB /WX TS'],
+            capture_output=True, text=True, timeout=15
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_local_lookahead_custom(self):
+        """--local-lookahead 90 should be accepted."""
+        import subprocess
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).parent / 'flyingphase.py'),
+             'OEKF 310600Z 33012KT 9999 FEW080 22/10 Q1018',
+             '--local-lookahead', '90'],
+            capture_output=True, text=True, timeout=15
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_verbose_shows_pipeline(self):
+        """--verbose should show Weather Element Pipeline section."""
+        import subprocess
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).parent / 'flyingphase.py'),
+             'OEKF 310600Z 33012KT 9999 FEW080 22/10 Q1018',
+             '--verbose',
+             '--pirep', 'UA /OV OEKF /FL050 /SK BKN040CB'],
+            capture_output=True, text=True, timeout=15
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Weather Element Pipeline', result.stdout)
+        self.assertIn('Phase window', result.stdout)
+        self.assertIn('Alternate window', result.stdout)
+        self.assertIn('Resolved:', result.stdout)
+
+    def test_verbose_pirep_elements_shown(self):
+        """PIREP elements should appear in verbose pipeline output."""
+        import subprocess
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).parent / 'flyingphase.py'),
+             'OEKF 310600Z 33012KT 9999 FEW080 22/10 Q1018',
+             '--verbose',
+             '--pirep', 'UA /OV OEKF /FL050 /SK BKN040CB /WX TS'],
+            capture_output=True, text=True, timeout=15
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('PIREP:', result.stdout)
+
+    def test_verbose_warning_elements_shown(self):
+        """WARNING elements should appear in verbose pipeline output."""
+        import subprocess
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).parent / 'flyingphase.py'),
+             'OEKF 310600Z 33012KT 9999 FEW080 22/10 Q1018',
+             '--verbose',
+             '--warning', 'visibility 2000 or less'],
+            capture_output=True, text=True, timeout=15
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('WARNING:', result.stdout)
+        self.assertIn('2000m', result.stdout)
+
+    def test_verbose_taf_elements_shown(self):
+        """TAF elements should appear in verbose pipeline output."""
+        import subprocess
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).parent / 'flyingphase.py'),
+             'OEKF 310600Z 33012KT 9999 FEW080 22/10 Q1018',
+             'TAF OEKF 310500Z 3106/3124 33015KT 9999 SCT040 BECMG 3110/3112 5000 BKN020',
+             '--verbose'],
+            capture_output=True, text=True, timeout=15
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('TAF:', result.stdout)
+        self.assertIn('BKN020', result.stdout)
+
+    def test_pipeline_phase_excludes_taf(self):
+        """Phase resolved should NOT include TAF vis (METAR+WARNING+PIREP only)."""
+        import subprocess
+        # METAR: 9999 (10km), TAF BECMG: 5000m, no warning
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).parent / 'flyingphase.py'),
+             'OEKF 310600Z 33012KT 9999 FEW080 22/10 Q1018',
+             'TAF OEKF 310500Z 3106/3124 33015KT 9999 SCT040 BECMG 3110/3112 5000 BKN020',
+             '--verbose'],
+            capture_output=True, text=True, timeout=15
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # In the phase resolved section, vis should be 10000 (from METAR), not 5000 (from TAF)
+        lines = result.stdout.split('\n')
+        in_phase_resolved = False
+        in_alt_resolved = False
+        phase_vis = None
+        alt_vis = None
+        for line in lines:
+            if 'Phase window' in line:
+                in_phase_resolved = True
+                in_alt_resolved = False
+            elif 'Alternate window' in line:
+                in_alt_resolved = True
+                in_phase_resolved = False
+            elif in_phase_resolved and 'Visibility:' in line:
+                phase_vis = line.strip()
+                in_phase_resolved = False
+            elif in_alt_resolved and 'Visibility:' in line:
+                alt_vis = line.strip()
+                in_alt_resolved = False
+        self.assertIsNotNone(phase_vis, "Phase visibility not found in output")
+        self.assertIn('10000m', phase_vis, f"Phase vis should be 10000m (METAR), got: {phase_vis}")
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
