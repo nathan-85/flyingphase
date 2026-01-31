@@ -1497,6 +1497,7 @@ def main():
     parser.add_argument('--checks', action='store_true', help='Show phase condition checks')
     parser.add_argument('--json', action='store_true', help='Output in JSON format')
     parser.add_argument('--no-cache', action='store_true', help='Bypass TAF cache')
+    parser.add_argument('--notams', action='store_true', help='Check NOTAMs for alternate airfields')
     parser.add_argument('--sortie-time', dest='sortie_time',
                         help='Sortie time in local (AST) HHmm format, e.g. "1030" for 10:30 local')
     
@@ -1770,6 +1771,31 @@ def main():
             if suitability['suitable'] and not best_alternate:
                 best_alternate = alt_result
     
+    # NOTAM check (optional)
+    notam_results = None
+    if args.notams:
+        try:
+            from notam_checker import check_notams_for_alternates, format_notam_report
+            alt_icaos = [alt['icao'] for alt in checked_alternates] if checked_alternates else []
+            if not alt_icaos:
+                # Check all alternates by default
+                alt_icaos = airfield_data.get('alternate_priority', [])
+            notam_results = check_notams_for_alternates(alt_icaos, timeout=10)
+        except ImportError:
+            # Try relative import
+            try:
+                script_dir = Path(__file__).parent
+                sys.path.insert(0, str(script_dir))
+                from notam_checker import check_notams_for_alternates, format_notam_report
+                alt_icaos = [alt['icao'] for alt in checked_alternates] if checked_alternates else []
+                if not alt_icaos:
+                    alt_icaos = airfield_data.get('alternate_priority', [])
+                notam_results = check_notams_for_alternates(alt_icaos, timeout=10)
+            except Exception as e:
+                print(f"Warning: NOTAM check failed: {e}", file=sys.stderr)
+        except Exception as e:
+            print(f"Warning: NOTAM check failed: {e}", file=sys.stderr)
+    
     # Output
     if args.json:
         json_output = {
@@ -1786,6 +1812,7 @@ def main():
             'bird_risk_level': bird_level,
             'bird_info': bird_info,
             'sortie_window': sortie_window,
+            'notams': notam_results,
             'notes': args.notes or []
         }
         print(json.dumps(json_output, indent=2))
@@ -1801,6 +1828,16 @@ def main():
             sortie_window=sortie_window,
             parse_warnings=warning_issues if warning_issues else None
         )
+        # Append NOTAM results if checked
+        if notam_results:
+            try:
+                from notam_checker import format_notam_report
+            except ImportError:
+                script_dir = Path(__file__).parent
+                sys.path.insert(0, str(script_dir))
+                from notam_checker import format_notam_report
+            output += "\n" + format_notam_report(notam_results) + "\n"
+        
         # Append operational notes if provided
         if args.notes:
             output += "\n📋 Operational Notes:"
