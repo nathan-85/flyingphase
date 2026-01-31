@@ -595,7 +595,7 @@ class TAFParser:
                 result['wind_gust'] = int(match.group(4))
         
         # Visibility
-        vis_pattern = r'\s(\d{4})\s'
+        vis_pattern = r'(?:^|\s)(\d{4})(?:\s|$)'
         match = re.search(vis_pattern, period_text)
         if match:
             vis = int(match.group(1))
