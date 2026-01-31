@@ -348,7 +348,8 @@ class TestPhaseDetermination(unittest.TestCase):
 
     def _phase(self, metar_str, rwy_hdg=330):
         m, resolved = _metar_to_resolved(metar_str)
-        result = determine_phase(resolved, rwy_hdg, self.airfield_data, temp=m.temp)
+        result = determine_phase(resolved, rwy_hdg, self.airfield_data,
+                                  temp=m.temp, cavok=m.cavok, nsc=m.nsc)
         return result['phase']
 
     # === UNRESTRICTED boundaries ===
@@ -497,7 +498,7 @@ class TestAMSLCloudThresholds(unittest.TestCase):
         m, resolved = _metar_to_resolved(metar_str, pirep_str=pirep_str,
                                           elevation_ft=self.oekf_elev)
         result = determine_phase(resolved, rwy_hdg, self.airfield_data,
-                                  temp=m.temp, cavok=m.cavok)
+                                  temp=m.temp, cavok=m.cavok, nsc=m.nsc)
         return result
 
     def test_cavok_is_restricted_not_unrestricted(self):
@@ -550,6 +551,17 @@ class TestAMSLCloudThresholds(unittest.TestCase):
         """METAR FEW080 = 8000ft AGL = 10400ft AMSL. Above 8000ft AMSL.
         Only FEW above threshold → UNRESTRICTED."""
         result = self._phase("OEKF 310600Z 33008KT 9999 FEW080 22/10 Q1018")
+        self.assertEqual(result['phase'], 'UNRESTRICTED')
+
+    def test_nsc_is_restricted_like_cavok(self):
+        """NSC guarantees clear below 5000ft AGL only (same as CAVOK).
+        Cannot satisfy UNRESTRICTED (needs clear below 5600ft AGL) → RESTRICTED."""
+        result = self._phase("OEKF 310600Z 33008KT 9999 NSC 22/10 Q1018")
+        self.assertEqual(result['phase'], 'RESTRICTED')
+
+    def test_skc_is_unrestricted(self):
+        """SKC (sky clear) is a positive report of no cloud at all → UNRESTRICTED."""
+        result = self._phase("OEKF 310600Z 33008KT 9999 SKC 22/10 Q1018")
         self.assertEqual(result['phase'], 'UNRESTRICTED')
 
 

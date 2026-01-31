@@ -54,6 +54,7 @@ class METARParser:
         self.dewpoint = None
         self.qnh = None
         self.cavok = False
+        self.nsc = False
         self.rvr = []
         self.remarks = ""
         self.cb_details = []  # List of CB observations with distance/direction
@@ -266,6 +267,8 @@ class METARParser:
             if i in consumed:
                 continue
             if part in clear_sky_codes:
+                if part == 'NSC':
+                    self.nsc = True
                 consumed.add(i)
                 continue
             match = re.match(r'^(FEW|SCT|BKN|OVC)(\d{3})(CB|TCU)?$', part)
@@ -904,7 +907,7 @@ def calculate_wind_components(wind_dir: int, wind_speed: int, runway_heading: in
 
 
 def determine_phase(resolved: dict, runway_heading: int, airfield_data: dict,
-                    temp: int = None, cavok: bool = False) -> dict:
+                    temp: int = None, cavok: bool = False, nsc: bool = False) -> dict:
     """
     Determine flying phase from resolved weather conditions (LOP Table 5-4).
     
@@ -915,13 +918,14 @@ def determine_phase(resolved: dict, runway_heading: int, airfield_data: dict,
         airfield_data: Airfield configuration dict.
         temp: Temperature in °C (display-only, used for >50°C HOLD check).
         cavok: Whether METAR reported CAVOK (guarantees clear below 5000ft AGL only).
+        nsc: Whether METAR reported NSC (same guarantee as CAVOK: clear below 5000ft AGL).
     
     Returns dict with phase, restrictions, conditions, and check results.
     
     Note: LOP phase table cloud thresholds (8000, 6000, 5000ft) are AMSL.
     All cloud heights in resolved dict are AGL. Thresholds are converted
     to AGL using airport elevation for comparison.
-    CAVOK guarantees no cloud below 5000ft AGL only.
+    CAVOK/NSC guarantee no cloud below 5000ft AGL only.
     """
     result = {
         'phase': None,
@@ -971,10 +975,11 @@ def determine_phase(resolved: dict, runway_heading: int, airfield_data: dict,
     restricted_cloud_agl = 6000 - elevation_ft     # e.g. 3930ft AGL
     fs_vfr_cloud_agl = 5000 - elevation_ft         # e.g. 2930ft AGL
     
-    # CAVOK guarantees clear below 5000ft AGL only.
-    # If no clouds reported and CAVOK, treat as "lowest observable cloud" at 5000ft AGL
+    # CAVOK/NSC guarantee clear below 5000ft AGL only.
+    # If no clouds reported and CAVOK/NSC, treat as "lowest observable cloud" at 5000ft AGL
     # — we don't know what's above that.
-    cavok_guarantee_agl = 5000  # CAVOK definition: no cloud below 5000ft AGL
+    clear_below_limit = cavok or nsc  # Both have same 5000ft AGL guarantee
+    cavok_guarantee_agl = 5000  # CAVOK/NSC definition: no cloud below 5000ft AGL
     
     # Cloud helpers (all heights AGL)
     ceiling = None
@@ -986,8 +991,8 @@ def determine_phase(resolved: dict, runway_heading: int, airfield_data: dict,
         if c['coverage'] in ('BKN', 'OVC') and (ceiling is None or h < ceiling):
             ceiling = h
     
-    # If CAVOK and no reported clouds, use CAVOK guarantee as lowest observable
-    if cavok and lowest_cloud is None:
+    # If CAVOK/NSC and no reported clouds, use guarantee as lowest observable
+    if clear_below_limit and lowest_cloud is None:
         lowest_cloud_for_phase = cavok_guarantee_agl
     else:
         lowest_cloud_for_phase = lowest_cloud
@@ -1056,8 +1061,8 @@ def determine_phase(resolved: dict, runway_heading: int, airfield_data: dict,
         if cloud['coverage'] in ['SCT', 'BKN', 'OVC']:
             no_sct_bkn_ovc = False
             break
-    # CAVOK: cannot guarantee above 5000ft AGL
-    if cavok and not clouds and unrestricted_cloud_agl > cavok_guarantee_agl:
+    # CAVOK/NSC: cannot guarantee above 5000ft AGL
+    if clear_below_limit and not clouds and unrestricted_cloud_agl > cavok_guarantee_agl:
         no_sct_bkn_ovc = False
     
     unrestricted_checks.append((f'Max FEW above 8000ft AMSL', no_sct_bkn_ovc))
@@ -2174,7 +2179,7 @@ def main():
     # --- PHASE DETERMINATION via WeatherElement pipeline ---
     # phase_resolved already contains worst-case from METAR+WARNING+PIREP
     phase_result = determine_phase(phase_resolved, runway_heading, airfield_data,
-                                   temp=metar.temp, cavok=metar.cavok)
+                                   temp=metar.temp, cavok=metar.cavok, nsc=metar.nsc)
     # Propagate CAVOK flag from actual METAR report (not derived)
     phase_result['conditions']['cavok'] = metar.cavok
     
