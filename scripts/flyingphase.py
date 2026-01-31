@@ -1577,6 +1577,7 @@ def format_output(phase_result: dict, metar: METARParser, runway: str,
         'VFR': '🟠',
         'IFR': '🔴',
         'HOLD': '⛔',
+        'HOLD/RECALL': '⛔🚨',
         'RECALL': '🚨'
     }
     
@@ -1593,20 +1594,33 @@ def format_output(phase_result: dict, metar: METARParser, runway: str,
         weather_phase = actual_phase
         if bird_info and bird_info.get('weather_phase'):
             weather_phase = bird_info['weather_phase']
+        # Service impacts override — use pre-service phase
+        phase_before_services = phase_result.get('_phase_before_services')
+        if phase_before_services and phase_before_services != actual_phase:
+            weather_phase = phase_before_services
         
         # Was the phase capped by bird activity or service impacts?
-        was_capped = (bird_info and bird_info.get('phase_impact')) or phase_result.get('_service_impacts')
+        bird_capped = bird_info and bird_info.get('phase_impact')
+        service_capped = phase_result.get('_service_impacts') and phase_before_services != actual_phase if phase_before_services else False
+        was_capped = bird_capped or service_capped
         
         output.append(f"✓ Phase Checks ({actual_phase}):")
         
         if was_capped and weather_phase != actual_phase:
-            # Show what capped the phase and from what
-            output.append(f"  Weather: {weather_phase} → capped to {actual_phase}:")
-            if bird_info and bird_info.get('phase_impact'):
+            # Show what weather determined, then what capped it
+            output.append(f"  Weather: {weather_phase} → {actual_phase}:")
+            if bird_capped:
                 output.append(f"    ❌ Bird activity {bird_info['level']}")
             for si in (phase_result.get('_service_impacts') or []):
                 if si.get('phase_impact'):
                     output.append(f"    ❌ {si['service']} — {si['action']}")
+            
+            # Also show weather checks for the weather-determined phase
+            if weather_phase in checks_dict:
+                output.append(f"  Weather checks ({weather_phase}):")
+                for check_name, passed in checks_dict[weather_phase]:
+                    check_emoji = "✅" if passed else "❌"
+                    output.append(f"    {check_emoji} {check_name}")
         else:
             # No capping — show the phase that matched, plus failed higher phases
             if actual_phase in checks_dict:
@@ -2257,6 +2271,8 @@ def main():
     
     # --- AIRFIELD SERVICES (LOP 5-11, Table 5-5) ---
     # Parse notes for service impacts and apply to phase determination.
+    # Save phase before service impacts for display (weather+bird determined phase)
+    phase_before_services = phase_result['phase']
     service_impacts = []
     if args.notes:
         notes_upper = ' '.join(args.notes).upper()
@@ -2277,7 +2293,7 @@ def main():
                     service_impacts.append({
                         'service': service_name,
                         'action': 'STOP flying',
-                        'phase_impact': 'HOLD',
+                        'phase_impact': 'HOLD/RECALL',
                         'ref': 'LOP 5-11 Table 5-5'
                     })
                     break
@@ -2331,13 +2347,13 @@ def main():
             })
     
     # Apply service impacts to phase
-    phase_rank = {'RECALL': 6, 'HOLD': 5, 'IFR': 4, 'VFR': 3, 'FS VFR': 2, 'RESTRICTED': 1, 'UNRESTRICTED': 0}
+    phase_rank = {'RECALL': 6, 'HOLD/RECALL': 6, 'HOLD': 5, 'IFR': 4, 'VFR': 3, 'FS VFR': 2, 'RESTRICTED': 1, 'UNRESTRICTED': 0}
     for impact in service_impacts:
         if impact['phase_impact']:
             impact_rank = phase_rank.get(impact['phase_impact'], 0)
             current_rank = phase_rank.get(phase_result['phase'], 0)
             
-            if impact['phase_impact'] in ('HOLD', 'RECALL') and impact_rank > current_rank:
+            if impact['phase_impact'] in ('HOLD', 'HOLD/RECALL', 'RECALL') and impact_rank > current_rank:
                 phase_result['phase'] = impact['phase_impact']
                 phase_result['reasons'].append(
                     f"⚠️ {impact['service']} unavailable — {impact['action']} ({impact['ref']})"
@@ -2367,6 +2383,7 @@ def main():
     # Stash service impacts on phase_result for display
     if service_impacts:
         phase_result['_service_impacts'] = service_impacts
+        phase_result['_phase_before_services'] = phase_before_services
     
     # Warning text is shown in warnings list (already parsed by pipeline)
     if args.warning:
