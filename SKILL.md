@@ -42,7 +42,7 @@ Extract these fields:
 ## Running the Script
 
 ```bash
-python3 scripts/flyingphase.py "<METAR>" ["<TAF>"] [--warning "<text>"] [--bird low|moderate|severe] [--notes "note1" "note2"] [--rwy 33L] [--solo] [--checks] [--json]
+python3 scripts/flyingphase.py "<METAR>" ["<TAF>"] [--warning "<text>"] [--bird low|moderate|severe] [--notes "note1" "note2"] [--rwy 33L] [--solo] [--verbose] [--json]
 ```
 
 ### Arguments
@@ -57,11 +57,30 @@ python3 scripts/flyingphase.py "<METAR>" ["<TAF>"] [--warning "<text>"] [--bird 
 | `--rwy 33L` | No | Runway override (auto-selects from wind if omitted) |
 | `--solo` | No | Solo cadet fuel adjustment (+100 lbs) |
 | `--opposite` | No | Opposite-side divert fuel (+30 lbs) |
-| `--checks` | No | Show pass/fail for each phase condition |
+| `--verbose` | No | Show all weather inputs for phase and alternate determination |
 | `--json` | No | JSON output |
 | `--no-cache` | No | Bypass TAF cache (re-fetch from API) |
 | `--sortie-time` | No | Sortie time HHmm (e.g. 1030) — shows conditions for ±1hr window |
 | `--notams` | No | Fetch live NOTAMs for OEKF + alternates from FAA |
+
+### METAR Parsing
+
+The METAR parser is **order-independent** — elements can appear in any sequence. Station identifier (OEKF) and timestamp are optional; they default to OEKF and current UTC if omitted. This means pilots can paste abbreviated METARs like:
+
+```
+05018G22KT NSC 9999 20/03 NOSIG
+```
+
+### Phase Checks
+
+Phase condition checks (✅/❌ per condition per phase) are **always shown** in output so users can verify the determination.
+
+### Verbose Mode
+
+When `--verbose` is passed, the output includes:
+
+- **Phase Determination Inputs**: raw METAR observation values, TAF +30min overlay changes, and the combined values used for phase checks
+- **Alternate Assessment Inputs**: each alternate's TAF conditions (base/BECMG/TEMPO), runway/crosswind, approach type and minimums, rejection reasons
 
 ### Example Command Construction
 
@@ -75,7 +94,7 @@ Run:
 python3 scripts/flyingphase.py "METAR OEKF 311200Z 28018G25KT 5000 SCT040 32/18 Q1012" "TAF OEKF 302200Z 3100/3124 28015KT 6000 SCT050" --warning "CB 25NM SW" --bird moderate --notes "RADAR only" "No medical"
 ```
 
-Note: Prefix the METAR string with `METAR ` and TAF string with `TAF ` if the user didn't include those prefixes.
+Note: Prefix the METAR string with `METAR ` and TAF string with `TAF ` if the user didn't include those prefixes. Station identifier and timestamp are optional — the parser handles bare METAR elements.
 
 ## Output
 
