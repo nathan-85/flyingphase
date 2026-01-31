@@ -11,10 +11,22 @@ Determine the current flying phase at King Faisal Air Academy (OEKF) from a META
 
 `/airfieldphase` followed by structured input. Also triggers on natural language like "what's the phase", "check the weather phase", or "airfield phase".
 
+## Blank Command
+
+If the user sends just `/airfieldphase` with no METAR data, reply with:
+
+```
+Paste a METAR after the command and I'll determine the phase — e.g. /airfieldphase 05014KT 9999 NSC 20/03 Q1023
+
+TAF, PIREP, WARNINGS, BIRDS, and NOTICES are optional. NOTAMs are fetched automatically; add --no-notams to skip.
+```
+
+Do not run the script — just return that help text.
+
 ## Input Format
 
 ```
-/airfieldphase METAR: <metar> [TAF: <taf>] [PIREP: <pirep>] [WARNINGS: <text>] [BIRDS: low|moderate|severe] [NOTES: <notes>]
+/airfieldphase METAR: <metar> [TAF: <taf>] [PIREP: <pirep>] [WARNINGS: <text>] [BIRDS: low|moderate|severe] [NOTICES: <notices>]
 ```
 
 All fields except METAR are optional. Examples:
@@ -24,7 +36,7 @@ All fields except METAR are optional. Examples:
 ```
 
 ```
-/airfieldphase METAR: OEKF 311200Z 28018G25KT 5000 SCT040 32/18 Q1012 TAF: OEKF 302200Z 3100/3124 28015KT 6000 SCT050 BECMG 3106/3108 15010KT PIREP: UA /OV OEKF /FL050 /SK BKN040CB /WX TS WARNINGS: CB reported 25NM southwest BIRDS: moderate NOTES: RADAR procedures only, No medical
+/airfieldphase METAR: OEKF 311200Z 28018G25KT 5000 SCT040 32/18 Q1012 TAF: OEKF 302200Z 3100/3124 28015KT 6000 SCT050 BECMG 3106/3108 15010KT PIREP: UA /OV OEKF /FL050 /SK BKN040CB /WX TS WARNINGS: CB reported 25NM southwest BIRDS: moderate NOTICES: RADAR procedures only, No medical
 ```
 
 If the user omits labels and pastes a raw METAR string, treat the entire input as the METAR.
@@ -38,12 +50,14 @@ Extract these fields:
 3. **PIREP** (optional) — Pilot report after `PIREP:` (e.g. `UA /OV OEKF /FL050 /SK BKN040CB /WX TS`)
 4. **WARNINGS** (optional) — weather warnings after `WARNINGS:`
 5. **BIRDS** (optional) — Bird-Strike Risk Level after `BIRDS:` — one of `low`, `moderate`, `severe`. Default: `low`
-6. **NOTES** (optional) — operational notes after `NOTES:` (comma-separated)
+6. **NOTICES** (optional) — operational notices after `NOTICES:` (comma-separated)
 
 ## Running the Script
 
+All paths are relative to the workspace root (e.g. `~/clawd`).
+
 ```bash
-python3 scripts/flyingphase.py "<METAR>" ["<TAF>"] ["<PIREP>"] [--warning "<text>"] [--bird low|moderate|severe] [--notes "note1" "note2"] [--rwy 33L] [--solo] [--verbose] [--local-lookahead 60] [--no-notams] [--json]
+python3 skills/flyingphase/scripts/flyingphase.py "<METAR>" ["<TAF>"] ["<PIREP>"] [--warning "<text>"] [--bird low|moderate|severe] [--notices "notice1" "notice2"] [--rwy 33L] [--solo] [--verbose] [--local-lookahead 60] [--no-notams] [--json]
 ```
 
 Positional inputs (METAR, TAF, PIREP) are **auto-classified** — no labels needed. The script detects:
@@ -60,7 +74,7 @@ All positional args must come **before** any flags.
 | Positional inputs | Yes (1+) | METAR, TAF, PIREP strings — auto-detected |
 | `--warning` | No | Weather warning text |
 | `--bird` | No | Bird-Strike Risk Level: `low` (default), `moderate`, `severe` |
-| `--notes` | No | Operational notes (space-separated strings) |
+| `--notices` | No | Operational notices (space-separated strings) |
 | `--rwy 33L` | No | Runway override (auto-selects from wind if omitted) |
 | `--solo` | No | Solo cadet fuel adjustment (+100 lbs) |
 | `--opposite` | No | Opposite-side divert fuel (+30 lbs) |
@@ -95,12 +109,12 @@ When `--verbose` is passed, the output includes:
 
 User sends:
 ```
-/airfieldphase METAR: OEKF 311200Z 28018G25KT 5000 SCT040 32/18 Q1012 TAF: OEKF 302200Z 3100/3124 28015KT 6000 SCT050 PIREP: UA /OV OEKF /FL050 /SK BKN040CB /WX TS WARNINGS: CB 25NM SW BIRDS: moderate NOTES: RADAR only, No medical
+/airfieldphase METAR: OEKF 311200Z 28018G25KT 5000 SCT040 32/18 Q1012 TAF: OEKF 302200Z 3100/3124 28015KT 6000 SCT050 PIREP: UA /OV OEKF /FL050 /SK BKN040CB /WX TS WARNINGS: CB 25NM SW BIRDS: moderate NOTICES: RADAR only, No medical
 ```
 
 Run:
 ```bash
-python3 scripts/flyingphase.py "METAR OEKF 311200Z 28018G25KT 5000 SCT040 32/18 Q1012" "TAF OEKF 302200Z 3100/3124 28015KT 6000 SCT050" "UA /OV OEKF /FL050 /SK BKN040CB /WX TS" --warning "CB 25NM SW" --bird moderate --notes "RADAR only" "No medical" --verbose
+python3 skills/flyingphase/scripts/flyingphase.py "METAR OEKF 311200Z 28018G25KT 5000 SCT040 32/18 Q1012" "TAF OEKF 302200Z 3100/3124 28015KT 6000 SCT050" "UA /OV OEKF /FL050 /SK BKN040CB /WX TS" --warning "CB 25NM SW" --bird moderate --notices "RADAR only" "No medical"
 ```
 
 Note: Prefix the METAR string with `METAR ` and TAF string with `TAF ` if the user didn't include those prefixes. PIREP strings are auto-detected (start with `UA` or `UUA`). Station identifier and timestamp are optional — the parser handles bare METAR elements.
@@ -112,8 +126,12 @@ User sends (simple):
 
 Run:
 ```bash
-python3 scripts/flyingphase.py "33012KT 9999 FEW080 22/10 Q1018" --verbose
+python3 skills/flyingphase/scripts/flyingphase.py "33012KT 9999 FEW080 22/10 Q1018"
 ```
+
+## Important: No Default Flags
+
+**Never add `--verbose` unless the user explicitly requests it** (e.g. says "verbose", "show details", "show pipeline", etc.). Pass only the flags the user provides — do not infer or add optional flags on their behalf.
 
 ## Output
 
@@ -158,7 +176,7 @@ NOTAMs are fetched by default from the FAA NOTAM Search API (no API key required
 
 The NOTAM checker can also run standalone:
 ```bash
-python3 scripts/notam_checker.py OEJD OERK OEGS [--json] [--timeout 15]
+python3 skills/flyingphase/scripts/notam_checker.py OEJD OERK OEGS [--json] [--timeout 15]
 ```
 
 NOTAMs are fetched by default — no need to pass any flag. Use `--no-notams` only if the user explicitly wants to skip them.

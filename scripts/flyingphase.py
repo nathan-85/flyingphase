@@ -2014,7 +2014,7 @@ def main():
                         help='Weather input strings (METAR, TAF, PIREP — auto-detected)')
     parser.add_argument('--rwy', '--runway', dest='runway', help='Runway in use (e.g., 33L)')
     parser.add_argument('--warning', help='Weather warning string')
-    parser.add_argument('--notes', nargs='*', help='Operational notes (e.g., "RADAR procedures only" "No medical")')
+    parser.add_argument('--notices', nargs='*', help='Operational notices (e.g., "RADAR procedures only" "No medical")')
     parser.add_argument('--bird', choices=['low', 'moderate', 'severe'], default='low',
                         help='Bird-Strike Risk Level (LOP 5-13). Default: low')
     parser.add_argument('--solo', action='store_true', help='Solo cadet (for fuel calculation)')
@@ -2270,12 +2270,12 @@ def main():
             warnings.append(f'🐦 Bird-Strike Risk: SEVERE — NO TAKE-OFFS, straight-in recovery only')
     
     # --- AIRFIELD SERVICES (LOP 5-11, Table 5-5) ---
-    # Parse notes for service impacts and apply to phase determination.
+    # Parse notices for service impacts and apply to phase determination.
     # Save phase before service impacts for display (weather+bird determined phase)
     phase_before_services = phase_result['phase']
     service_impacts = []
-    if args.notes:
-        notes_upper = ' '.join(args.notes).upper()
+    if args.notices:
+        notes_upper = ' '.join(args.notices).upper()
         
         # Table 5-5 KFAA Operations — any of these missing → HOLD/RECALL
         hold_services = {
@@ -2539,7 +2539,7 @@ def main():
             'bird_info': bird_info,
             'sortie_window': sortie_window,
             'notams': notam_results,
-            'notes': args.notes or []
+            'notices': args.notices or []
         }
         print(json.dumps(json_output, indent=2))
     else:
@@ -2562,10 +2562,10 @@ def main():
         elif notam_results and notam_results.get('status') == 'error':
             output += f"\n⚠️  NOTAM Check: {notam_results.get('message', 'Failed')}\n"
         
-        # Append operational notes if provided
-        if args.notes:
-            output += "\n📋 Operational Notes:"
-            for note in args.notes:
+        # Append operational notices if provided
+        if args.notices:
+            output += "\n📋 Operational Notices:"
+            for note in args.notices:
                 output += f"\n  • {note}"
             output += "\n"
         

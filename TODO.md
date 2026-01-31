@@ -6,6 +6,14 @@
 
 ## Completed ✅
 
+### v2.4 (2026-01-31)
+- [x] Renamed `--notes` → `--notices` (NOTES → NOTICES) across script, SKILL.md, README
+- [x] Added blank `/airfieldphase` command response with usage guide
+- [x] Fixed script paths in SKILL.md to workspace-relative (`skills/flyingphase/scripts/...`)
+- [x] Added `README.md` for humans browsing the repo
+- [x] Added "No Default Flags" rule — `--verbose` never added unless user requests it
+- [x] 158 unit tests passing
+
 ### v2.3 (2026-01-31)
 - [x] **NOTAM via FAA External API** — proper `external-api.faa.gov/notamapi/v1` integration
 - [x] GeoJSON response, per-ICAO GET requests (matches iOS `FAA_API` branch)
@@ -98,8 +106,7 @@ Nathan providing IAP data (Feb 1):
 - [ ] Training schedule optimization
 
 ### ClawdHub Publishing
-- [ ] `clawdhub login` and publish as distributable skill
-- [ ] Package with `package_skill.py`
+- [ ] Not planned — sharing via private repo clone instead
 
 ---
 
@@ -120,7 +127,7 @@ Nathan providing IAP data (Feb 1):
 
 ## Testing ✓
 
-### Automated (82 tests)
+### Automated (158 tests)
 - [x] METAR parser — standard, CAVOK, variable wind, AUTO, missing fields
 - [x] Wind components — all quadrants, calm, variable, wrap-around
 - [x] Phase determination — all 7 phases, boundary conditions
@@ -128,6 +135,7 @@ Nathan providing IAP data (Feb 1):
 - [x] Bird levels — LOW no impact, MODERATE/SEVERE cap at VFR
 - [x] NOTAM classification, runway/navaid extraction
 - [x] NOTAM alternate impact (AD closed, ILS/VOR outage detection)
+- [x] Weather element pipeline — multi-source conflict resolution (36 tests)
 
 ### Real-World Validation (Pending)
 - [ ] Compare output to actual SOF phase calls
