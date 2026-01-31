@@ -2023,7 +2023,7 @@ def main():
     parser.add_argument('--verbose', action='store_true', help='Show all weather inputs for phase and alternate determination')
     parser.add_argument('--json', action='store_true', help='Output in JSON format')
     parser.add_argument('--no-cache', action='store_true', help='Bypass TAF cache')
-    parser.add_argument('--notams', action='store_true', help='Check NOTAMs for alternate airfields')
+    parser.add_argument('--no-notams', action='store_true', help='Skip NOTAM fetch (NOTAMs fetched by default)')
     parser.add_argument('--sortie-time', dest='sortie_time',
                         help='Sortie time in local (AST) HHmm format, e.g. "1030" for 10:30 local')
     parser.add_argument('--local-lookahead', dest='local_lookahead', type=int, default=60,
@@ -2422,7 +2422,7 @@ def main():
     
     # NOTAM check (before alternate selection so it can disqualify airfields)
     notam_results = None
-    if args.notams:
+    if not args.no_notams:
         try:
             script_dir = Path(__file__).parent
             if str(script_dir) not in sys.path:

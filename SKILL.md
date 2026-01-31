@@ -43,7 +43,7 @@ Extract these fields:
 ## Running the Script
 
 ```bash
-python3 scripts/flyingphase.py "<METAR>" ["<TAF>"] ["<PIREP>"] [--warning "<text>"] [--bird low|moderate|severe] [--notes "note1" "note2"] [--rwy 33L] [--solo] [--verbose] [--local-lookahead 60] [--notams] [--json]
+python3 scripts/flyingphase.py "<METAR>" ["<TAF>"] ["<PIREP>"] [--warning "<text>"] [--bird low|moderate|severe] [--notes "note1" "note2"] [--rwy 33L] [--solo] [--verbose] [--local-lookahead 60] [--no-notams] [--json]
 ```
 
 Positional inputs (METAR, TAF, PIREP) are **auto-classified** — no labels needed. The script detects:
@@ -69,7 +69,7 @@ All positional args must come **before** any flags.
 | `--json` | No | JSON output |
 | `--no-cache` | No | Bypass TAF cache (re-fetch from API) |
 | `--sortie-time` | No | Sortie time HHmm (e.g. 1030) — shows conditions for ±1hr window |
-| `--notams` | No | Fetch live NOTAMs for OEKF + alternates from FAA |
+| `--no-notams` | No | Skip NOTAM fetch (NOTAMs are fetched by default) |
 
 ### METAR Parsing
 
@@ -100,7 +100,7 @@ User sends:
 
 Run:
 ```bash
-python3 scripts/flyingphase.py "METAR OEKF 311200Z 28018G25KT 5000 SCT040 32/18 Q1012" "TAF OEKF 302200Z 3100/3124 28015KT 6000 SCT050" "UA /OV OEKF /FL050 /SK BKN040CB /WX TS" --warning "CB 25NM SW" --bird moderate --notes "RADAR only" "No medical" --notams --verbose
+python3 scripts/flyingphase.py "METAR OEKF 311200Z 28018G25KT 5000 SCT040 32/18 Q1012" "TAF OEKF 302200Z 3100/3124 28015KT 6000 SCT050" "UA /OV OEKF /FL050 /SK BKN040CB /WX TS" --warning "CB 25NM SW" --bird moderate --notes "RADAR only" "No medical" --verbose
 ```
 
 Note: Prefix the METAR string with `METAR ` and TAF string with `TAF ` if the user didn't include those prefixes. PIREP strings are auto-detected (start with `UA` or `UUA`). Station identifier and timestamp are optional — the parser handles bare METAR elements.
@@ -112,7 +112,7 @@ User sends (simple):
 
 Run:
 ```bash
-python3 scripts/flyingphase.py "33012KT 9999 FEW080 22/10 Q1018" --notams --verbose
+python3 scripts/flyingphase.py "33012KT 9999 FEW080 22/10 Q1018" --verbose
 ```
 
 ## Output
@@ -149,7 +149,7 @@ Live TAF auto-fetched for alternate weather assessment.
 
 ## NOTAM Integration
 
-When `--notams` is passed, the tool fetches live NOTAMs from the FAA NOTAM Search API (no API key required) for OEKF and all alternate airfields:
+NOTAMs are fetched by default from the FAA NOTAM Search API (no API key required) for OEKF and all alternate airfields. Use `--no-notams` to skip. What NOTAMs provide:
 
 - **Closed runways/aerodromes** disqualify alternates from selection
 - **ILS/VOR/DME outages** shown as warnings per alternate
@@ -161,7 +161,7 @@ The NOTAM checker can also run standalone:
 python3 scripts/notam_checker.py OEJD OERK OEGS [--json] [--timeout 15]
 ```
 
-**Always pass `--notams` in the command** when the user runs `/airfieldphase`. This ensures alternate recommendations account for real-world NOTAM restrictions.
+NOTAMs are fetched by default — no need to pass any flag. Use `--no-notams` only if the user explicitly wants to skip them.
 
 ## Dependencies
 

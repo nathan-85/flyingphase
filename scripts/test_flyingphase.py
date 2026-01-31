@@ -1125,7 +1125,7 @@ class TestWeatherElementPipeline(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, str(Path(__file__).parent / 'flyingphase.py'),
              'OEKF 310600Z 33012KT 9999 FEW080 22/10 Q1018',
-             'UA /OV OEKF /FL050 /SK BKN040CB /WX TS'],
+             'UA /OV OEKF /FL050 /SK BKN040CB /WX TS', '--no-notams'],
             capture_output=True, text=True, timeout=15
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -1136,7 +1136,7 @@ class TestWeatherElementPipeline(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, str(Path(__file__).parent / 'flyingphase.py'),
              'OEKF 310600Z 33012KT 9999 FEW080 22/10 Q1018',
-             '--local-lookahead', '90'],
+             '--local-lookahead', '90', '--no-notams'],
             capture_output=True, text=True, timeout=15
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -1148,7 +1148,7 @@ class TestWeatherElementPipeline(unittest.TestCase):
             [sys.executable, str(Path(__file__).parent / 'flyingphase.py'),
              'OEKF 310600Z 33012KT 9999 FEW080 22/10 Q1018',
              'UA /OV OEKF /FL050 /SK BKN040CB',
-             '--verbose'],
+             '--verbose', '--no-notams'],
             capture_output=True, text=True, timeout=15
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -1165,7 +1165,7 @@ class TestWeatherElementPipeline(unittest.TestCase):
             [sys.executable, str(Path(__file__).parent / 'flyingphase.py'),
              'OEKF 310600Z 33012KT 9999 FEW080 22/10 Q1018',
              'UA /OV OEKF /FL050 /SK BKN040CB /WX TS',
-             '--verbose'],
+             '--verbose', '--no-notams'],
             capture_output=True, text=True, timeout=15
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -1178,7 +1178,7 @@ class TestWeatherElementPipeline(unittest.TestCase):
             [sys.executable, str(Path(__file__).parent / 'flyingphase.py'),
              'OEKF 310600Z 33012KT 9999 FEW080 22/10 Q1018',
              '--warning', 'visibility 2000 or less',
-             '--verbose'],
+             '--verbose', '--no-notams'],
             capture_output=True, text=True, timeout=15
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -1192,7 +1192,7 @@ class TestWeatherElementPipeline(unittest.TestCase):
             [sys.executable, str(Path(__file__).parent / 'flyingphase.py'),
              'OEKF 310600Z 33012KT 9999 FEW080 22/10 Q1018',
              'TAF OEKF 310500Z 3106/3124 33015KT 9999 SCT040 BECMG 3110/3112 5000 BKN020',
-             '--verbose'],
+             '--verbose', '--no-notams'],
             capture_output=True, text=True, timeout=15
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -1207,7 +1207,7 @@ class TestWeatherElementPipeline(unittest.TestCase):
             [sys.executable, str(Path(__file__).parent / 'flyingphase.py'),
              'OEKF 310600Z 33012KT 9999 FEW080 22/10 Q1018',
              'TAF OEKF 310500Z 3106/3124 33015KT 9999 SCT040 BECMG 3110/3112 5000 BKN020',
-             '--verbose'],
+             '--verbose', '--no-notams'],
             capture_output=True, text=True, timeout=15
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -1265,7 +1265,7 @@ class TestInputAutoClassification(unittest.TestCase):
              'OEKF 310600Z 33012KT 9999 FEW080 22/10 Q1018',
              'TAF OEKF 310500Z 3106/3124 33015KT 9999 SCT040 BECMG 3110/3112 5000 BKN020',
              'UA /OV OEKF /FL050 /SK BKN040CB /WX TS',
-             '--verbose'],
+             '--verbose', '--no-notams'],
             capture_output=True, text=True, timeout=15
         )
         self.assertEqual(result.returncode, 0, result.stderr)
