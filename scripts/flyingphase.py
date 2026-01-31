@@ -986,7 +986,7 @@ def determine_phase(resolved: dict, runway_heading: int, airfield_data: dict,
         'headwind': round(headwind_component, 1),
         'tailwind': round(tailwind, 1),
         'temp': temp,
-        'cavok': vis_m == 10000 and not clouds,
+        'cavok': False,  # Set by caller from metar.cavok (not derived)
         'has_cb': has_cb,
         'has_ts': has_ts,
         'weather': weather_codes,
@@ -2131,6 +2131,8 @@ def main():
     # --- PHASE DETERMINATION via WeatherElement pipeline ---
     # phase_resolved already contains worst-case from METAR+WARNING+PIREP
     phase_result = determine_phase(phase_resolved, runway_heading, airfield_data, temp=metar.temp)
+    # Propagate CAVOK flag from actual METAR report (not derived)
+    phase_result['conditions']['cavok'] = metar.cavok
     
     # Check if alternate required — using alt_resolved (ALL sources, now→+180min)
     alternate_required = False
