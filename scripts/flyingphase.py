@@ -63,7 +63,8 @@ class METARParser:
             issues.append("❌ Wind group not found — expected format like 33012KT or VRB03KT")
         if self.visibility_m is None and not self.cavok:
             issues.append("❌ Visibility not found — expected 4-digit meters (e.g. 9999, 3000) or CAVOK")
-        if not self.clouds and not self.cavok:
+        has_sky_code = any(code in self.raw.upper() for code in ['NSC', 'SKC', 'NCD', 'CLR'])
+        if not self.clouds and not self.cavok and not has_sky_code:
             issues.append("⚠️ No cloud groups found — expected format like FEW040, SCT080, BKN015, OVC003")
         if self.qnh is None:
             issues.append("⚠️ QNH not found — expected Q1013 or A2992")
@@ -195,9 +196,16 @@ class METARParser:
         
         # Clouds: FEW040, SCT020, BKN015, OVC010, NSC, SKC, NCD
         special_cloud_codes = ['NSC', 'SKC', 'NCD', 'CLR', 'CAVOK']
+        # METAR trend indicators — everything after these is trend forecast, not observation
+        trend_indicators = ['NOSIG', 'TEMPO', 'BECMG']
         
         while idx < len(parts):
             part = parts[idx]
+            
+            # Stop cloud parsing at trend indicators (NOSIG, TEMPO, BECMG)
+            # These mark the boundary between observation and trend forecast
+            if part in trend_indicators:
+                break
             
             # Check for special cloud codes
             if part in special_cloud_codes:
@@ -1484,6 +1492,12 @@ def format_output(phase_result: dict, metar: METARParser, runway: str,
                   parse_warnings: List[str] = None) -> str:
     """Format human-readable output."""
     output = []
+    
+    # Current Zulu time stamp
+    from datetime import datetime, timezone
+    zulu_now = datetime.now(timezone.utc)
+    output.append(f"🕐 {zulu_now.strftime('%d %b %Y %H%MZ')}")
+    output.append("")
     
     # Header
     phase_emoji = {
