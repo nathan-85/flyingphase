@@ -16,7 +16,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from flyingphase import (
     METARParser, TAFParser,
-    calculate_wind_components, determine_phase, select_runway
+    calculate_wind_components, determine_phase, select_runway,
+    _is_ils_available
 )
 from weather_elements import (
     WeatherCollection, parse_metar_elements, parse_warning_elements,
@@ -971,7 +972,9 @@ class TestNotamAlternateImpact(unittest.TestCase):
         }
         impact = self.get_impact('OEPS', results)
         self.assertTrue(impact['suitable'])  # AD still open
-        self.assertFalse(impact['ils_available'])
+        # ILS U/S is per-runway — RWY 33 ILS unavailable, global stays true
+        self.assertTrue(impact['ils_available'])  # Global (no blanket ILS NOTAM)
+        self.assertFalse(_is_ils_available(impact, '33'))  # RWY 33 specifically
         self.assertFalse(impact['vor_available'])
 
 

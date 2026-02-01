@@ -1291,12 +1291,13 @@ def _approach_navaid_required(approach: dict) -> Optional[str]:
     return None
 
 
-def _is_navaid_serviceable(navaid_type: str, notam_impact: dict) -> bool:
-    """Check if a navaid type is serviceable given NOTAM impact data."""
+def _is_navaid_serviceable(navaid_type: str, notam_impact: dict, runway: str = None) -> bool:
+    """Check if a navaid type is serviceable given NOTAM impact data.
+    For ILS, checks per-runway status first, then falls back to global."""
     if not notam_impact:
         return True  # No NOTAM data = assume serviceable
-    if navaid_type == 'ILS' and not notam_impact.get('ils_available', True):
-        return False
+    if navaid_type == 'ILS':
+        return _is_ils_available(notam_impact, runway)
     if navaid_type == 'VOR' and not notam_impact.get('vor_available', True):
         return False
     # For TACAN/NDB, check warnings list
@@ -1305,6 +1306,46 @@ def _is_navaid_serviceable(navaid_type: str, notam_impact: dict) -> bool:
             if f'{navaid_type} unserviceable' in w:
                 return False
     return True
+
+
+def _is_ils_available(notam_impact: dict, runway: str = None) -> bool:
+    """Check ILS availability for a specific runway, falling back to global.
+    Handles compound runway IDs like '17R/35L'."""
+    if not notam_impact:
+        return True
+    if not runway:
+        return notam_impact.get('ils_available', True)
+    rwy_status = notam_impact.get('runway_status', {})
+    components = [r.strip() for r in runway.split('/')]
+    for comp in components:
+        if comp in rwy_status:
+            status = rwy_status[comp]
+            if not status.get('ils', True) or not status.get('loc', True):
+                return False
+    # No per-runway data found — use global
+    if all(comp not in rwy_status for comp in components):
+        return notam_impact.get('ils_available', True)
+    return True
+
+
+def _is_glideslope_degraded(notam_impact, runway: str = None) -> bool:
+    """Check if glideslope is U/S but localizer still available (LOC-only flyable)."""
+    if not notam_impact:
+        return False
+    if not runway:
+        return not notam_impact.get('glideslope_available', True) and \
+               notam_impact.get('localizer_available', True)
+    rwy_status = notam_impact.get('runway_status', {})
+    components = [r.strip() for r in runway.split('/')]
+    for comp in components:
+        if comp in rwy_status:
+            status = rwy_status[comp]
+            if not status.get('gs', True) and status.get('loc', True):
+                return True
+    if all(comp not in rwy_status for comp in components):
+        return not notam_impact.get('glideslope_available', True) and \
+               notam_impact.get('localizer_available', True)
+    return False
 
 
 def check_alternate_suitability(icao: str, taf_string: Optional[str], 
@@ -1377,19 +1418,25 @@ def check_alternate_suitability(icao: str, taf_string: Optional[str],
         return result
     
     # FOB 18-3e(1): Must have a published IAP with serviceable navaid
-    # Filter approaches to only those with serviceable navaids
+    # Filter approaches to only those with serviceable navaids (per-runway checks)
     usable_approaches = []
     rejected_approaches = []
     glideslope_degraded = []  # ILS approaches flyable as LOC-only
     for app in approaches:
         navaid = _approach_navaid_required(app)
-        if navaid and not _is_navaid_serviceable(navaid, notam_impact):
-            rejected_approaches.append(f"{app.get('type', '?')} RWY {app.get('runway', '?')} ({navaid} U/S)")
+        app_runway = app.get('runway', '')
+        if navaid == 'ILS' and notam_impact:
+            # Per-runway ILS check
+            if not _is_ils_available(notam_impact, app_runway):
+                rejected_approaches.append(f"{app.get('type', '?')} RWY {app_runway} (ILS U/S)")
+                continue
+            # Check glideslope degraded for this specific runway
+            if _is_glideslope_degraded(notam_impact, app_runway):
+                glideslope_degraded.append(app_runway)
+            usable_approaches.append(app)
+        elif navaid and not _is_navaid_serviceable(navaid, notam_impact):
+            rejected_approaches.append(f"{app.get('type', '?')} RWY {app_runway} ({navaid} U/S)")
         else:
-            # ILS with glideslope U/S: still usable as LOC-only (higher minimums)
-            if notam_impact and 'ILS' in app.get('type', '').upper() \
-                    and not notam_impact.get('glideslope_available', True):
-                glideslope_degraded.append(app.get('runway', ''))
             usable_approaches.append(app)
     
     if not usable_approaches:

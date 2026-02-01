@@ -526,39 +526,66 @@ def get_notam_impact_on_alternate(icao: str, results: dict) -> dict:
     summary = airfield.get('summary', {})
 
     # Check navaid availability from all high-impact NOTAMs
-    # Track ILS components separately:
+    # Track ILS components per-runway:
     #   - Glideslope U/S alone = LOC-only approach still flyable (higher minimums)
     #   - Localizer U/S = ILS truly unusable
     #   - ILS explicitly U/S = ILS unusable
-    ils_explicitly_us = False
-    localizer_available = True
-    glideslope_available = True
+    # Per-runway tracking prevents e.g. "ILS RWY 35R U/S" from killing 17R ILS
+    global_ils_us = False
+    global_loc_available = True
+    global_gs_available = True
     vor_available = True
     warnings = []
+    runway_status = {}  # {rwy: {'ils': True, 'loc': True, 'gs': True}}
+
     for n in airfield.get('notams', []):
         if n['high_impact']:
             warnings.extend(n['impacts'])
+            rwy = n.get('affected_runway')  # e.g. "17R", "35R", "17R/35L"
+
             for impact in n['impacts']:
                 upper_impact = impact.upper()
-                if 'LOCALIZER' in upper_impact and 'UNSERVICEABLE' in upper_impact:
-                    localizer_available = False
-                if 'GLIDESLOPE' in upper_impact and 'UNSERVICEABLE' in upper_impact:
-                    glideslope_available = False
-                if 'ILS' in upper_impact and 'UNSERVICEABLE' in upper_impact \
-                        and 'GLIDESLOPE' not in upper_impact and 'LOCALIZER' not in upper_impact:
-                    ils_explicitly_us = True
+
+                is_loc = 'LOCALIZER' in upper_impact and 'UNSERVICEABLE' in upper_impact
+                is_gs = 'GLIDESLOPE' in upper_impact and 'UNSERVICEABLE' in upper_impact
+                is_ils = 'ILS' in upper_impact and 'UNSERVICEABLE' in upper_impact \
+                    and 'GLIDESLOPE' not in upper_impact and 'LOCALIZER' not in upper_impact
+
+                if rwy:
+                    # Per-runway tracking — expand compound runways like "17R/35L"
+                    for r in rwy.split('/'):
+                        r = r.strip()
+                        if r not in runway_status:
+                            runway_status[r] = {'ils': True, 'loc': True, 'gs': True}
+                        if is_loc:
+                            runway_status[r]['loc'] = False
+                            runway_status[r]['ils'] = False
+                        if is_gs:
+                            runway_status[r]['gs'] = False
+                        if is_ils:
+                            runway_status[r]['ils'] = False
+                else:
+                    # No runway specified — apply globally
+                    if is_loc:
+                        global_loc_available = False
+                    if is_gs:
+                        global_gs_available = False
+                    if is_ils:
+                        global_ils_us = True
+
                 if 'VOR' in upper_impact and 'UNSERVICEABLE' in upper_impact:
                     vor_available = False
 
-    # ILS only truly unavailable if localizer is U/S or ILS explicitly U/S
-    ils_available = not ils_explicitly_us and localizer_available
+    # Global ILS only truly unavailable if localizer is U/S or ILS explicitly U/S
+    global_ils_available = not global_ils_us and global_loc_available
 
     return {
         'suitable': not summary.get('aerodrome_closed', False),
-        'ils_available': ils_available,
-        'localizer_available': localizer_available,
-        'glideslope_available': glideslope_available,
+        'ils_available': global_ils_available,
+        'localizer_available': global_loc_available,
+        'glideslope_available': global_gs_available,
         'vor_available': vor_available,
+        'runway_status': runway_status,
         'closed_runways': summary.get('closed_runways', []),
         'warnings': warnings,
         'bird_activity': summary.get('bird_activity', False)
