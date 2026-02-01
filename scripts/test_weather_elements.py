@@ -315,6 +315,36 @@ class TestParseWarningElements(unittest.TestCase):
         els = parse_warning_elements("")
         self.assertEqual(len(els), 0)
 
+    def test_bare_number_skc_7000(self):
+        """SKC 7000 in warning → vis 7000m."""
+        els = parse_warning_elements("SKC 7000")
+        vis = [el for el in els if el.type == 'visibility']
+        self.assertEqual(len(vis), 1)
+        self.assertEqual(vis[0].value['meters'], 7000)
+
+    def test_bare_number_bkn020_5000(self):
+        """BKN020 5000 → vis 5000m + cloud BKN at 2000ft."""
+        els = parse_warning_elements("BKN020 5000")
+        vis = [el for el in els if el.type == 'visibility']
+        clouds = [el for el in els if el.type == 'cloud']
+        self.assertEqual(vis[0].value['meters'], 5000)
+        self.assertEqual(clouds[0].value['coverage'], 'BKN')
+        self.assertEqual(clouds[0].value['height_ft'], 2000)
+
+    def test_bare_number_ovc010cb_3000(self):
+        """OVC010CB 3000 → vis 3000m + CB cloud."""
+        els = parse_warning_elements("OVC010CB 3000")
+        vis = [el for el in els if el.type == 'visibility']
+        clouds = [el for el in els if el.type == 'cloud']
+        self.assertEqual(vis[0].value['meters'], 3000)
+        self.assertTrue(clouds[0].value['cb'])
+
+    def test_bare_number_not_qnh(self):
+        """Q1019 should NOT parse as visibility."""
+        els = parse_warning_elements("Q1019")
+        vis = [el for el in els if el.type == 'visibility']
+        self.assertEqual(len(vis), 0)
+
 
 class TestParsePIREPElements(unittest.TestCase):
     """Test PIREP → WeatherElement conversion."""
@@ -345,6 +375,21 @@ class TestParsePIREPElements(unittest.TestCase):
         for el in els:
             self.assertIsNone(el.valid_to)
             self.assertEqual(el.source, 'PIREP')
+
+    def test_bare_number_skc_7000(self):
+        """SKC 7000 in PIREP field → vis 7000m."""
+        els = parse_pirep_elements("SKC 7000", elevation_ft=2400)
+        vis = [el for el in els if el.type == 'visibility']
+        self.assertEqual(len(vis), 1)
+        self.assertEqual(vis[0].value['meters'], 7000)
+
+    def test_bare_number_bkn020_5000(self):
+        """BKN020 5000 in PIREP field → vis 5000m + cloud."""
+        els = parse_pirep_elements("BKN020 5000", elevation_ft=2400)
+        vis = [el for el in els if el.type == 'visibility']
+        clouds = [el for el in els if el.type == 'cloud']
+        self.assertEqual(vis[0].value['meters'], 5000)
+        self.assertEqual(len(clouds), 1)
 
 
 class TestEndToEndPhaseScenario(unittest.TestCase):

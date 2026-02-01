@@ -1118,6 +1118,62 @@ class TestWarningPhaseImpact(unittest.TestCase):
         # METAR gives VFR (crosswind 21.7kt), warning vis 9000 shouldn't change it
         self.assertEqual(result['phase'], 'VFR')
 
+    # --- PIREP visibility override ---
+
+    def test_pirep_vis_3000_overrides_metar_9999(self):
+        """PIREP /FV 3000M should reduce effective vis from 9999 → 3000 → IFR."""
+        m, resolved = _metar_to_resolved(
+            "OEKF 010800Z 33008KT 9999 FEW080 22/10 Q1018",
+            pirep_str="UA /OV OEKF /FL030 /TP C172 /FV 3000M",
+            elevation_ft=2400
+        )
+        result = determine_phase(resolved, 330, self.airfield_data, temp=m.temp)
+        self.assertEqual(resolved['visibility_m'], 3000)
+        self.assertEqual(result['phase'], 'IFR')
+
+    def test_pirep_vis_5000_overrides_metar_9999(self):
+        """PIREP /FV 5KM → effective vis 5000 → FS VFR."""
+        m, resolved = _metar_to_resolved(
+            "OEKF 010800Z 33008KT 9999 SKC 22/10 Q1018",
+            pirep_str="UA /OV OEKF /FL030 /TP C172 /FV 5KM",
+            elevation_ft=2400
+        )
+        result = determine_phase(resolved, 330, self.airfield_data, temp=m.temp)
+        self.assertEqual(resolved['visibility_m'], 5000)
+        self.assertEqual(result['phase'], 'FS VFR')
+
+    def test_pirep_vis_higher_than_metar_no_override(self):
+        """PIREP /FV 9999M should NOT override METAR 5000m — METAR is lower."""
+        m, resolved = _metar_to_resolved(
+            "OEKF 010800Z 33008KT 5000 FEW080 22/10 Q1018",
+            pirep_str="UA /OV OEKF /FL030 /TP C172 /FV 9999M",
+            elevation_ft=2400
+        )
+        self.assertEqual(resolved['visibility_m'], 5000)
+
+    def test_warning_vis_2000_overrides_pirep_and_metar(self):
+        """WARNING vis 2000 + PIREP vis 5000 + METAR 9999 → lowest wins (2000)."""
+        m, resolved = _metar_to_resolved(
+            "OEKF 010800Z 33008KT 9999 FEW080 22/10 Q1018",
+            warning="visibility 2000 or less",
+            pirep_str="UA /OV OEKF /FL030 /TP C172 /FV 5KM",
+            elevation_ft=2400
+        )
+        result = determine_phase(resolved, 330, self.airfield_data, temp=m.temp)
+        self.assertEqual(resolved['visibility_m'], 2000)
+        self.assertEqual(result['phase'], 'IFR')
+
+    def test_pirep_vis_500_forces_hold(self):
+        """PIREP /FV 500M → vis 500m → HOLD (below ILS CAT I 800m minimums)."""
+        m, resolved = _metar_to_resolved(
+            "OEKF 010800Z 33008KT 9999 SKC 22/10 Q1018",
+            pirep_str="UA /OV OEKF /FL030 /TP C172 /FV 500M",
+            elevation_ft=2400
+        )
+        result = determine_phase(resolved, 330, self.airfield_data, temp=m.temp)
+        self.assertEqual(resolved['visibility_m'], 500)
+        self.assertEqual(result['phase'], 'HOLD')
+
 
 class TestWeatherElementPipeline(unittest.TestCase):
     """Test WeatherElement pipeline integration in main flow."""

@@ -533,6 +533,17 @@ def parse_warning_elements(warning_text: str) -> List[WeatherElement]:
             vis_m = int(val)
             break
 
+    # Fallback: bare 4-digit number (METAR-style vis, e.g. "SKC 7000" or just "5000")
+    # Excludes wind-like patterns (3-digit direction + speed) and QNH
+    if vis_m is None:
+        bare = re.search(r'(?<!\d)(\d{4})(?!\d)', warn_upper)
+        if bare:
+            val = int(bare.group(1))
+            # Exclude QNH values (1000-1050 range preceded by Q)
+            prefix = warn_upper[:bare.start()]
+            if not prefix.rstrip().endswith('Q') and 100 <= val <= 9999:
+                vis_m = val
+
     if vis_m is None and any(x in warn_upper for x in
                               ['DUST STORM', 'SANDSTORM', 'SAND STORM', 'BLDU', 'BLSA']):
         vis_m = 1000
@@ -556,6 +567,16 @@ def parse_warning_elements(warning_text: str) -> List[WeatherElement]:
                 source='WARNING', raw=warning_text
             ))
             break
+
+    # METAR-style cloud groups (e.g. "BKN020", "OVC010CB", "FEW050")
+    for cm in re.finditer(r'\b(FEW|SCT|BKN|OVC)(\d{3})(CB|TCU)?\b', warn_upper):
+        cb = cm.group(3) == 'CB' if cm.group(3) else False
+        height_ft = int(cm.group(2)) * 100
+        elements.append(WeatherElement(
+            type='cloud',
+            value={'coverage': cm.group(1), 'height_ft': height_ft, 'cb': cb},
+            source='WARNING', raw=cm.group(0)
+        ))
 
     # Dust/sand weather
     if any(x in warn_upper for x in ['BLDU', 'BLSA', 'DUST', 'SAND']):
@@ -627,6 +648,32 @@ def parse_pirep_elements(pirep_text: str,
             type='visibility', value={'meters': val}, source='PIREP',
             valid_from=report_time, valid_to=None, raw=fv_match.group(0)
         ))
+
+    # Fallback: no /FV found — try bare 4-digit vis (METAR-style, e.g. "SKC 7000")
+    has_vis = any(el.type == 'visibility' for el in elements)
+    if not has_vis and not fv_match:
+        bare = re.search(r'(?<!\d)(\d{4})(?!\d)', upper)
+        if bare:
+            val = int(bare.group(1))
+            prefix = upper[:bare.start()]
+            if not prefix.rstrip().endswith('Q') and 100 <= val <= 9999:
+                elements.append(WeatherElement(
+                    type='visibility', value={'meters': val}, source='PIREP',
+                    valid_from=report_time, valid_to=None, raw=bare.group(0)
+                ))
+
+    # Fallback: no /SK found — try bare cloud groups (METAR-style, e.g. "BKN020 5000")
+    has_clouds = any(el.type == 'cloud' for el in elements)
+    if not has_clouds and not sk_match:
+        for cm in re.finditer(r'\b(FEW|SCT|BKN|OVC)(\d{3})(CB|TCU)?\b', upper):
+            cb = cm.group(3) == 'CB' if cm.group(3) else False
+            height_ft = int(cm.group(2)) * 100  # Bare clouds treated as AGL (like METAR)
+            elements.append(WeatherElement(
+                type='cloud',
+                value={'coverage': cm.group(1), 'height_ft': height_ft, 'cb': cb},
+                source='PIREP', valid_from=report_time, valid_to=None,
+                raw=cm.group(0)
+            ))
 
     # CB anywhere in PIREP
     if re.search(r'\bCB\b|\bTS\b|THUNDERSTORM', upper):
