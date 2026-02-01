@@ -1348,6 +1348,120 @@ def _is_glideslope_degraded(notam_impact, runway: str = None) -> bool:
     return False
 
 
+def analyze_service_impacts(notices: str) -> list:
+    """
+    Analyze operational notices for service impacts (LOP 5-11, Table 5-5).
+    Returns list of impact dicts with service, action, phase_impact, ref.
+    """
+    if not notices:
+        return []
+    notes_upper = notices.upper()
+    impacts = []
+
+    # Table 5-5 KFAA Operations — any of these missing → HOLD/RECALL
+    hold_services = {
+        'ATC': [r'\bNO\s+ATC\b', r'\bATC\s+(?:DOWN|FAIL|U/?S|UNAVAIL)'],
+        'SAR HELICOPTER': [r'\bNO\s+SAR\b', r'\bSAR\s+(?:HELICOPTER|HELO?)?\s*(?:DOWN|FAIL|U/?S|UNAVAIL)'],
+        'MEDICAL': [r'\bNO\s+(?:MEDICAL|DOCTOR|AMBULANCE)\b',
+                    r'\b(?:MEDICAL|DOCTOR|AMBULANCE)\s+(?:DOWN|FAIL|U/?S|UNAVAIL)'],
+        'FIRE/CRASH': [r'\bNO\s+(?:FIRE|CRASH|CFR)\b',
+                       r'\b(?:FIRE|CRASH|CFR)\s+(?:DOWN|FAIL|U/?S|UNAVAIL|RESCUE)?\s*(?:DOWN|FAIL|U/?S|UNAVAIL)'],
+    }
+    for service_name, patterns in hold_services.items():
+        for pat in patterns:
+            if re.search(pat, notes_upper):
+                impacts.append({
+                    'service': service_name,
+                    'action': 'STOP flying',
+                    'phase_impact': 'HOLD/RECALL',
+                    'ref': 'LOP 5-11 Table 5-5'
+                })
+                break
+
+    # Radar failures → VFR cap, no solo
+    radar_patterns = [
+        r'\bNO\s+RADAR\b',
+        r'\bRADAR\s+(?:FAIL|DOWN|U/?S|UNAVAIL|PROCEDURE)',
+        r'\bWITHOUT\s+RADAR\b',
+    ]
+    if any(re.search(pat, notes_upper) for pat in radar_patterns):
+        impacts.append({
+            'service': 'RADAR',
+            'action': 'No solo cadets, use No Radar Procedures',
+            'phase_impact': 'VFR',
+            'ref': 'LOP 5-11 Table 5-5'
+        })
+
+    # MoCO not in position
+    if re.search(r'\bNO\s+MOCO\b|\bMOCO\s+(?:DOWN|FAIL|U/?S|UNAVAIL|NOT)', notes_upper):
+        impacts.append({
+            'service': 'MoCO',
+            'action': 'No T-21 take-offs/landings until MoCO in position',
+            'phase_impact': None,
+            'ref': 'LOP 5-11 Table 5-5'
+        })
+
+    # No comms with radar → RECALL
+    if re.search(r'\bNO\s+(?:AIR\s+TO\s+GROUND\s+)?COMMS?\s+(?:WITH\s+)?RADAR\b', notes_upper):
+        impacts.append({
+            'service': 'RADAR COMMS',
+            'action': 'STOP solo cadet flying, use No Radar Procedures',
+            'phase_impact': 'RECALL',
+            'ref': 'LOP 5-11 Table 5-5'
+        })
+
+    # DVORTAC / Guard frequency
+    if re.search(r'\bNO\s+(?:DVORTAC|GUARD)\b|\b(?:DVORTAC|GUARD)\s+(?:DOWN|FAIL|U/?S|UNAVAIL)', notes_upper):
+        impacts.append({
+            'service': 'DVORTAC/GUARD',
+            'action': 'STOP solo cadet flying in training areas',
+            'phase_impact': 'VFR',
+            'ref': 'LOP 5-11 Table 5-5'
+        })
+
+    return impacts
+
+
+def apply_service_impacts(impacts: list, phase_result: dict) -> list:
+    """
+    Apply service impacts to a phase result dict. Returns list of warning strings.
+    Modifies phase_result in place.
+    """
+    warnings = []
+    phase_rank = {'RECALL': 6, 'HOLD/RECALL': 6, 'HOLD': 5, 'IFR': 4, 'VFR': 3, 'FS VFR': 2, 'RESTRICTED': 1, 'UNRESTRICTED': 0}
+
+    for impact in impacts:
+        if impact['phase_impact']:
+            impact_rank = phase_rank.get(impact['phase_impact'], 0)
+            current_rank = phase_rank.get(phase_result['phase'], 0)
+
+            if impact['phase_impact'] in ('HOLD', 'HOLD/RECALL', 'RECALL') and impact_rank > current_rank:
+                phase_result['phase'] = impact['phase_impact']
+                phase_result['reasons'].append(
+                    f"⚠️ {impact['service']} unavailable — {impact['action']} ({impact['ref']})"
+                )
+                phase_result['restrictions'] = {
+                    'solo_cadets': False, 'first_solo': False,
+                    'note': f"{impact['service']} unavailable"
+                }
+            elif impact['phase_impact'] == 'VFR':
+                solo_phases = ['UNRESTRICTED', 'RESTRICTED', 'FS VFR']
+                if phase_result['phase'] in solo_phases:
+                    phase_result['phase'] = 'VFR'
+                    phase_result['restrictions'] = {
+                        'solo_cadets': False, 'first_solo': False,
+                        'solo_note': f'{impact["service"]} — {impact["action"]}'
+                    }
+                phase_result['restrictions']['solo_cadets'] = False
+                phase_result['restrictions']['first_solo'] = False
+
+            warnings.append(f"🔧 {impact['service']}: {impact['action']} ({impact['ref']})")
+        else:
+            warnings.append(f"🔧 {impact['service']}: {impact['action']} ({impact['ref']})")
+
+    return warnings
+
+
 def check_alternate_suitability(icao: str, taf_string: Optional[str], 
                                 airfield_data: dict, oekf_wind_dir: int = None, 
                                 oekf_wind_speed: int = None,
@@ -2336,116 +2450,12 @@ def main():
             warnings.append(f'🐦 Bird-Strike Risk: SEVERE — NO TAKE-OFFS, straight-in recovery only')
     
     # --- AIRFIELD SERVICES (LOP 5-11, Table 5-5) ---
-    # Parse notices for service impacts and apply to phase determination.
-    # Save phase before service impacts for display (weather+bird determined phase)
     phase_before_services = phase_result['phase']
-    service_impacts = []
-    if args.notices:
-        notes_upper = ' '.join(args.notices).upper()
-        
-        # Table 5-5 KFAA Operations — any of these missing → HOLD/RECALL
-        hold_services = {
-            'ATC': [r'\bNO\s+ATC\b', r'\bATC\s+(?:DOWN|FAIL|U/?S|UNAVAIL)'],
-            'SAR HELICOPTER': [r'\bNO\s+SAR\b', r'\bSAR\s+(?:HELICOPTER|HELO?)?\s*(?:DOWN|FAIL|U/?S|UNAVAIL)'],
-            'MEDICAL': [r'\bNO\s+(?:MEDICAL|DOCTOR|AMBULANCE)\b',
-                        r'\b(?:MEDICAL|DOCTOR|AMBULANCE)\s+(?:DOWN|FAIL|U/?S|UNAVAIL)'],
-            'FIRE/CRASH': [r'\bNO\s+(?:FIRE|CRASH|CFR)\b',
-                           r'\b(?:FIRE|CRASH|CFR)\s+(?:DOWN|FAIL|U/?S|UNAVAIL|RESCUE)?\s*(?:DOWN|FAIL|U/?S|UNAVAIL)'],
-        }
-        
-        for service_name, patterns in hold_services.items():
-            for pat in patterns:
-                if re.search(pat, notes_upper):
-                    service_impacts.append({
-                        'service': service_name,
-                        'action': 'STOP flying',
-                        'phase_impact': 'HOLD/RECALL',
-                        'ref': 'LOP 5-11 Table 5-5'
-                    })
-                    break
-        
-        # Table 5-5 Training Area — radar failures
-        # "No Radar Procedures" / "Radar failure" → VFR cap, no solo
-        radar_patterns = [
-            r'\bNO\s+RADAR\b',
-            r'\bRADAR\s+(?:FAIL|DOWN|U/?S|UNAVAIL|PROCEDURE)',
-            r'\bWITHOUT\s+RADAR\b',
-        ]
-        radar_down = False
-        for pat in radar_patterns:
-            if re.search(pat, notes_upper):
-                radar_down = True
-                break
-        
-        if radar_down:
-            service_impacts.append({
-                'service': 'RADAR',
-                'action': 'No solo cadets, use No Radar Procedures',
-                'phase_impact': 'VFR',
-                'ref': 'LOP 5-11 Table 5-5'
-            })
-        
-        # MoCO not in position → no T-21 T/O or landing on that runway
-        if re.search(r'\bNO\s+MOCO\b|\bMOCO\s+(?:DOWN|FAIL|U/?S|UNAVAIL|NOT)', notes_upper):
-            service_impacts.append({
-                'service': 'MoCO',
-                'action': 'No T-21 take-offs/landings until MoCO in position',
-                'phase_impact': None,  # Doesn't change phase, operational restriction
-                'ref': 'LOP 5-11 Table 5-5'
-            })
-        
-        # No comms with radar → RECALL
-        if re.search(r'\bNO\s+(?:AIR\s+TO\s+GROUND\s+)?COMMS?\s+(?:WITH\s+)?RADAR\b', notes_upper):
-            service_impacts.append({
-                'service': 'RADAR COMMS',
-                'action': 'STOP solo cadet flying, use No Radar Procedures',
-                'phase_impact': 'RECALL',
-                'ref': 'LOP 5-11 Table 5-5'
-            })
-        
-        # DVORTAC / Guard frequency
-        if re.search(r'\bNO\s+(?:DVORTAC|GUARD)\b|\b(?:DVORTAC|GUARD)\s+(?:DOWN|FAIL|U/?S|UNAVAIL)', notes_upper):
-            service_impacts.append({
-                'service': 'DVORTAC/GUARD',
-                'action': 'STOP solo cadet flying in training areas',
-                'phase_impact': 'VFR',
-                'ref': 'LOP 5-11 Table 5-5'
-            })
-    
-    # Apply service impacts to phase
-    phase_rank = {'RECALL': 6, 'HOLD/RECALL': 6, 'HOLD': 5, 'IFR': 4, 'VFR': 3, 'FS VFR': 2, 'RESTRICTED': 1, 'UNRESTRICTED': 0}
-    for impact in service_impacts:
-        if impact['phase_impact']:
-            impact_rank = phase_rank.get(impact['phase_impact'], 0)
-            current_rank = phase_rank.get(phase_result['phase'], 0)
-            
-            if impact['phase_impact'] in ('HOLD', 'HOLD/RECALL', 'RECALL') and impact_rank > current_rank:
-                phase_result['phase'] = impact['phase_impact']
-                phase_result['reasons'].append(
-                    f"⚠️ {impact['service']} unavailable — {impact['action']} ({impact['ref']})"
-                )
-                phase_result['restrictions'] = {
-                    'solo_cadets': False, 'first_solo': False,
-                    'note': f"{impact['service']} unavailable"
-                }
-            elif impact['phase_impact'] == 'VFR':
-                # Cap at VFR (same as bird activity logic)
-                solo_phases = ['UNRESTRICTED', 'RESTRICTED', 'FS VFR']
-                if phase_result['phase'] in solo_phases:
-                    phase_result['phase'] = 'VFR'
-                    phase_result['restrictions'] = {
-                        'solo_cadets': False, 'first_solo': False,
-                        'solo_note': f'{impact["service"]} — {impact["action"]}'
-                    }
-                # Always kill solo regardless of current phase
-                phase_result['restrictions']['solo_cadets'] = False
-                phase_result['restrictions']['first_solo'] = False
-            
-            warnings.append(f"🔧 {impact['service']}: {impact['action']} ({impact['ref']})")
-        else:
-            # Operational restriction only (e.g. MoCO)
-            warnings.append(f"🔧 {impact['service']}: {impact['action']} ({impact['ref']})")
-    
+    notices_text = ' '.join(args.notices) if args.notices else ''
+    service_impacts = analyze_service_impacts(notices_text)
+    service_warnings = apply_service_impacts(service_impacts, phase_result)
+    warnings.extend(service_warnings)
+
     # Stash service impacts on phase_result for display
     if service_impacts:
         phase_result['_service_impacts'] = service_impacts

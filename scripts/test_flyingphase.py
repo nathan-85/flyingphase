@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from flyingphase import (
     METARParser, TAFParser,
     calculate_wind_components, determine_phase, select_runway,
-    _is_ils_available
+    _is_ils_available, analyze_service_impacts, apply_service_impacts
 )
 from weather_elements import (
     WeatherCollection, parse_metar_elements, parse_warning_elements,
@@ -1276,6 +1276,118 @@ class TestInputAutoClassification(unittest.TestCase):
         self.assertIn('METAR:', result.stdout)
         self.assertIn('TAF:', result.stdout)
         self.assertIn('PIREP:', result.stdout)
+
+class TestServiceImpacts(unittest.TestCase):
+    """Tests for analyze_service_impacts and apply_service_impacts."""
+
+    # --- analyze ---
+
+    def test_empty_notices(self):
+        self.assertEqual(analyze_service_impacts(''), [])
+
+    def test_no_atc_triggers_hold_recall(self):
+        impacts = analyze_service_impacts('No ATC')
+        self.assertEqual(len(impacts), 1)
+        self.assertEqual(impacts[0]['service'], 'ATC')
+        self.assertEqual(impacts[0]['phase_impact'], 'HOLD/RECALL')
+
+    def test_atc_down_triggers_hold_recall(self):
+        impacts = analyze_service_impacts('ATC DOWN')
+        self.assertEqual(len(impacts), 1)
+        self.assertEqual(impacts[0]['service'], 'ATC')
+
+    def test_no_sar_triggers_hold_recall(self):
+        impacts = analyze_service_impacts('No SAR')
+        self.assertEqual(len(impacts), 1)
+        self.assertEqual(impacts[0]['service'], 'SAR HELICOPTER')
+        self.assertEqual(impacts[0]['phase_impact'], 'HOLD/RECALL')
+
+    def test_no_medical_triggers_hold_recall(self):
+        impacts = analyze_service_impacts('No Medical')
+        self.assertEqual(len(impacts), 1)
+        self.assertEqual(impacts[0]['service'], 'MEDICAL')
+        self.assertEqual(impacts[0]['phase_impact'], 'HOLD/RECALL')
+
+    def test_no_fire_triggers_hold_recall(self):
+        impacts = analyze_service_impacts('No Fire')
+        self.assertEqual(len(impacts), 1)
+        self.assertEqual(impacts[0]['service'], 'FIRE/CRASH')
+        self.assertEqual(impacts[0]['phase_impact'], 'HOLD/RECALL')
+
+    def test_no_radar_caps_to_vfr(self):
+        impacts = analyze_service_impacts('No Radar')
+        self.assertEqual(len(impacts), 1)
+        self.assertEqual(impacts[0]['service'], 'RADAR')
+        self.assertEqual(impacts[0]['phase_impact'], 'VFR')
+
+    def test_radar_fail_caps_to_vfr(self):
+        impacts = analyze_service_impacts('Radar Fail')
+        self.assertEqual(len(impacts), 1)
+        self.assertEqual(impacts[0]['service'], 'RADAR')
+
+    def test_no_moco_no_phase_impact(self):
+        impacts = analyze_service_impacts('No MOCO')
+        self.assertEqual(len(impacts), 1)
+        self.assertEqual(impacts[0]['service'], 'MoCO')
+        self.assertIsNone(impacts[0]['phase_impact'])
+
+    def test_no_dvortac_caps_to_vfr(self):
+        impacts = analyze_service_impacts('No DVORTAC')
+        self.assertEqual(len(impacts), 1)
+        self.assertEqual(impacts[0]['service'], 'DVORTAC/GUARD')
+        self.assertEqual(impacts[0]['phase_impact'], 'VFR')
+
+    def test_multiple_notices(self):
+        impacts = analyze_service_impacts('No ATC, No Radar')
+        services = [i['service'] for i in impacts]
+        self.assertIn('ATC', services)
+        self.assertIn('RADAR', services)
+
+    def test_unrelated_text_no_impact(self):
+        impacts = analyze_service_impacts('Normal operations')
+        self.assertEqual(len(impacts), 0)
+
+    # --- apply ---
+
+    def _make_phase(self, phase):
+        return {
+            'phase': phase,
+            'reasons': [],
+            'restrictions': {'solo_cadets': True, 'first_solo': True}
+        }
+
+    def test_no_atc_degrades_to_recall(self):
+        impacts = analyze_service_impacts('No ATC')
+        phase = self._make_phase('UNRESTRICTED')
+        apply_service_impacts(impacts, phase)
+        self.assertIn(phase['phase'], ('HOLD/RECALL', 'RECALL'))
+
+    def test_no_radar_degrades_to_vfr(self):
+        impacts = analyze_service_impacts('No Radar')
+        phase = self._make_phase('UNRESTRICTED')
+        apply_service_impacts(impacts, phase)
+        self.assertEqual(phase['phase'], 'VFR')
+        self.assertFalse(phase['restrictions']['solo_cadets'])
+
+    def test_no_radar_does_not_upgrade_from_ifr(self):
+        impacts = analyze_service_impacts('No Radar')
+        phase = self._make_phase('IFR')
+        apply_service_impacts(impacts, phase)
+        self.assertEqual(phase['phase'], 'IFR')
+
+    def test_no_atc_overrides_even_ifr(self):
+        impacts = analyze_service_impacts('No ATC')
+        phase = self._make_phase('IFR')
+        apply_service_impacts(impacts, phase)
+        self.assertIn(phase['phase'], ('HOLD/RECALL', 'RECALL'))
+
+    def test_moco_does_not_change_phase(self):
+        impacts = analyze_service_impacts('No MOCO')
+        phase = self._make_phase('UNRESTRICTED')
+        warnings = apply_service_impacts(impacts, phase)
+        self.assertEqual(phase['phase'], 'UNRESTRICTED')
+        self.assertTrue(len(warnings) > 0)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
