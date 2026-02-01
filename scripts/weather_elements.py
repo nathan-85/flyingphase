@@ -516,11 +516,14 @@ def parse_warning_elements(warning_text: str) -> List[WeatherElement]:
 
     # Visibility
     vis_m = None
+    # Optional filler between VIS and number: BELOW, REDUCING, REDUCING TO, DOWN TO, OF, <
+    _VIS_FILLER = r'(?:(?:REDUCING\s+TO|REDUCING|DOWN\s+TO|BELOW|OF|<)\s+)?'
     vis_patterns = [
-        r'VIS(?:IBILITY)?\s+(?:BELOW\s+|<\s*|OF\s+)?(\d+)\s*(?:M(?:ETERS?)?|OR\s+LESS)',
-        r'VIS(?:IBILITY)?\s+(?:BELOW\s+|<\s*|OF\s+)?(\d+(?:\.\d+)?)\s*KM',
-        r'VIS(?:IBILITY)?\s+(\d+)\b',
+        r'VIS(?:IBILITY)?\s+' + _VIS_FILLER + r'(\d+)\s*(?:M(?:ETERS?)?|OR\s+LESS)',
+        r'VIS(?:IBILITY)?\s+' + _VIS_FILLER + r'(\d+(?:\.\d+)?)\s*KM',
+        r'VIS(?:IBILITY)?\s+' + _VIS_FILLER + r'(\d+)\b',
         r'(\d+)\s*(?:M\b|METERS?)\s+(?:OR\s+LESS|VISIBILITY)',
+        r'\b(\d+)\s*KM\b',  # bare "7KM"
     ]
     for vp in vis_patterns:
         vm = re.search(vp, warn_upper)
@@ -652,11 +655,13 @@ def parse_pirep_elements(pirep_text: str,
     # Fallback: no /FV — try VIS/VISIBILITY patterns (same as warning parser)
     has_vis = any(el.type == 'visibility' for el in elements)
     if not has_vis and not fv_match:
+        _VIS_F = r'(?:(?:REDUCING\s+TO|REDUCING|DOWN\s+TO|BELOW|OF|<)\s+)?'
         vis_patterns_fallback = [
-            r'VIS(?:IBILITY)?\s+(?:BELOW\s+|<\s*|OF\s+)?(\d+)\s*(?:M(?:ETERS?)?|OR\s+LESS)',
-            r'VIS(?:IBILITY)?\s+(?:BELOW\s+|<\s*|OF\s+)?(\d+(?:\.\d+)?)\s*KM',
-            r'VIS(?:IBILITY)?\s+(\d+)\b',
+            r'VIS(?:IBILITY)?\s+' + _VIS_F + r'(\d+)\s*(?:M(?:ETERS?)?|OR\s+LESS)',
+            r'VIS(?:IBILITY)?\s+' + _VIS_F + r'(\d+(?:\.\d+)?)\s*KM',
+            r'VIS(?:IBILITY)?\s+' + _VIS_F + r'(\d+)\b',
             r'(\d+)\s*(?:M\b|METERS?)\s+(?:OR\s+LESS|VISIBILITY)',
+            r'\b(\d+)\s*KM\b',
         ]
         for vp in vis_patterns_fallback:
             vm = re.search(vp, upper)

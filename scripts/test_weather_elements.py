@@ -345,6 +345,34 @@ class TestParseWarningElements(unittest.TestCase):
         vis = [el for el in els if el.type == 'visibility']
         self.assertEqual(len(vis), 0)
 
+    def test_vis_reducing_7000(self):
+        self.assertEqual(parse_warning_elements("VISIBILITY REDUCING 7000")[0].value['meters'], 7000)
+
+    def test_vis_reducing_7000m(self):
+        self.assertEqual(parse_warning_elements("VISIBILITY REDUCING 7000M")[0].value['meters'], 7000)
+
+    def test_vis_reducing_7km(self):
+        vis = [el for el in parse_warning_elements("VISIBILITY REDUCING 7KM") if el.type == 'visibility']
+        self.assertEqual(vis[0].value['meters'], 7000)
+
+    def test_vis_reducing_to_7000(self):
+        self.assertEqual(parse_warning_elements("VISIBILITY REDUCING TO 7000")[0].value['meters'], 7000)
+
+    def test_vis_reducing_to_7000m(self):
+        self.assertEqual(parse_warning_elements("VISIBILITY REDUCING TO 7000M")[0].value['meters'], 7000)
+
+    def test_vis_reducing_to_7km(self):
+        vis = [el for el in parse_warning_elements("VISIBILITY REDUCING TO 7KM") if el.type == 'visibility']
+        self.assertEqual(vis[0].value['meters'], 7000)
+
+    def test_bare_7km(self):
+        vis = [el for el in parse_warning_elements("7KM") if el.type == 'visibility']
+        self.assertEqual(vis[0].value['meters'], 7000)
+
+    def test_bare_7000m(self):
+        vis = [el for el in parse_warning_elements("7000M") if el.type == 'visibility']
+        self.assertEqual(vis[0].value['meters'], 7000)
+
 
 class TestParsePIREPElements(unittest.TestCase):
     """Test PIREP → WeatherElement conversion."""
@@ -390,6 +418,46 @@ class TestParsePIREPElements(unittest.TestCase):
         clouds = [el for el in els if el.type == 'cloud']
         self.assertEqual(vis[0].value['meters'], 5000)
         self.assertEqual(len(clouds), 1)
+
+    def test_pirep_vis_7000(self):
+        vis = [el for el in parse_pirep_elements("VIS 7000", elevation_ft=2400) if el.type == 'visibility']
+        self.assertEqual(vis[0].value['meters'], 7000)
+
+    def test_pirep_vis_7000m(self):
+        vis = [el for el in parse_pirep_elements("VIS 7000M", elevation_ft=2400) if el.type == 'visibility']
+        self.assertEqual(vis[0].value['meters'], 7000)
+
+    def test_pirep_vis_7km(self):
+        vis = [el for el in parse_pirep_elements("VIS 7KM", elevation_ft=2400) if el.type == 'visibility']
+        self.assertEqual(vis[0].value['meters'], 7000)
+
+    def test_pirep_visibility_7000(self):
+        vis = [el for el in parse_pirep_elements("VISIBILITY 7000", elevation_ft=2400) if el.type == 'visibility']
+        self.assertEqual(vis[0].value['meters'], 7000)
+
+    def test_pirep_vis_reducing_7000(self):
+        vis = [el for el in parse_pirep_elements("VISIBILITY REDUCING 7000", elevation_ft=2400) if el.type == 'visibility']
+        self.assertEqual(vis[0].value['meters'], 7000)
+
+    def test_pirep_vis_reducing_7km(self):
+        vis = [el for el in parse_pirep_elements("VISIBILITY REDUCING 7KM", elevation_ft=2400) if el.type == 'visibility']
+        self.assertEqual(vis[0].value['meters'], 7000)
+
+    def test_pirep_vis_reducing_to_7000(self):
+        vis = [el for el in parse_pirep_elements("VISIBILITY REDUCING TO 7000", elevation_ft=2400) if el.type == 'visibility']
+        self.assertEqual(vis[0].value['meters'], 7000)
+
+    def test_pirep_vis_reducing_to_7km(self):
+        vis = [el for el in parse_pirep_elements("VISIBILITY REDUCING TO 7KM", elevation_ft=2400) if el.type == 'visibility']
+        self.assertEqual(vis[0].value['meters'], 7000)
+
+    def test_pirep_bare_7000m(self):
+        vis = [el for el in parse_pirep_elements("7000M", elevation_ft=2400) if el.type == 'visibility']
+        self.assertEqual(vis[0].value['meters'], 7000)
+
+    def test_pirep_bare_7km(self):
+        vis = [el for el in parse_pirep_elements("7KM", elevation_ft=2400) if el.type == 'visibility']
+        self.assertEqual(vis[0].value['meters'], 7000)
 
 
 class TestEndToEndPhaseScenario(unittest.TestCase):
