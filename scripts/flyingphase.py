@@ -1380,11 +1380,16 @@ def check_alternate_suitability(icao: str, taf_string: Optional[str],
     # Filter approaches to only those with serviceable navaids
     usable_approaches = []
     rejected_approaches = []
+    glideslope_degraded = []  # ILS approaches flyable as LOC-only
     for app in approaches:
         navaid = _approach_navaid_required(app)
         if navaid and not _is_navaid_serviceable(navaid, notam_impact):
             rejected_approaches.append(f"{app.get('type', '?')} RWY {app.get('runway', '?')} ({navaid} U/S)")
         else:
+            # ILS with glideslope U/S: still usable as LOC-only (higher minimums)
+            if notam_impact and 'ILS' in app.get('type', '').upper() \
+                    and not notam_impact.get('glideslope_available', True):
+                glideslope_degraded.append(app.get('runway', ''))
             usable_approaches.append(app)
     
     if not usable_approaches:
@@ -1455,6 +1460,16 @@ def check_alternate_suitability(icao: str, taf_string: Optional[str],
         if suitable_approach:
             app_vis = suitable_approach['minimums'].get('visibility_m', 800)
             app_ceil = suitable_approach['minimums'].get('ceiling_ft', 200)
+
+            # ILS with glideslope U/S → LOC-only: raise minimums
+            # LOC-only typically adds ~200ft to ceiling and ~800m to vis
+            if 'ILS' in suitable_approach.get('type', '').upper() \
+                    and suitable_approach.get('runway', '') in glideslope_degraded:
+                app_ceil += 200
+                app_vis += 800
+                result['warnings'].append(
+                    f"GS U/S → LOC-only minimums for {suitable_approach.get('runway', '?')}")
+
             min_vis_m = max(3000, app_vis + 1600)
             min_ceiling_ft = max(1000, app_ceil + 500)
         

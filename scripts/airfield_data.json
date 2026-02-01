@@ -555,10 +555,10 @@
       "mag_var_degrees": 3,
       "runways": [
         {
-          "id": "18/36",
-          "heading": "180/360",
-          "reciprocal": "180/360",
-          "true_brg": "183/3"
+          "id": "13/31",
+          "heading": "130/310",
+          "reciprocal": "130/310",
+          "true_brg": "133/313"
         }
       ],
       "navaids": [

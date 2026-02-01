@@ -526,7 +526,13 @@ def get_notam_impact_on_alternate(icao: str, results: dict) -> dict:
     summary = airfield.get('summary', {})
 
     # Check navaid availability from all high-impact NOTAMs
-    ils_available = True
+    # Track ILS components separately:
+    #   - Glideslope U/S alone = LOC-only approach still flyable (higher minimums)
+    #   - Localizer U/S = ILS truly unusable
+    #   - ILS explicitly U/S = ILS unusable
+    ils_explicitly_us = False
+    localizer_available = True
+    glideslope_available = True
     vor_available = True
     warnings = []
     for n in airfield.get('notams', []):
@@ -534,18 +540,24 @@ def get_notam_impact_on_alternate(icao: str, results: dict) -> dict:
             warnings.extend(n['impacts'])
             for impact in n['impacts']:
                 upper_impact = impact.upper()
-                if 'ILS' in upper_impact and 'UNSERVICEABLE' in upper_impact:
-                    ils_available = False
                 if 'LOCALIZER' in upper_impact and 'UNSERVICEABLE' in upper_impact:
-                    ils_available = False
+                    localizer_available = False
                 if 'GLIDESLOPE' in upper_impact and 'UNSERVICEABLE' in upper_impact:
-                    ils_available = False
+                    glideslope_available = False
+                if 'ILS' in upper_impact and 'UNSERVICEABLE' in upper_impact \
+                        and 'GLIDESLOPE' not in upper_impact and 'LOCALIZER' not in upper_impact:
+                    ils_explicitly_us = True
                 if 'VOR' in upper_impact and 'UNSERVICEABLE' in upper_impact:
                     vor_available = False
+
+    # ILS only truly unavailable if localizer is U/S or ILS explicitly U/S
+    ils_available = not ils_explicitly_us and localizer_available
 
     return {
         'suitable': not summary.get('aerodrome_closed', False),
         'ils_available': ils_available,
+        'localizer_available': localizer_available,
+        'glideslope_available': glideslope_available,
         'vor_available': vor_available,
         'closed_runways': summary.get('closed_runways', []),
         'warnings': warnings,
