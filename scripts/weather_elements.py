@@ -649,7 +649,30 @@ def parse_pirep_elements(pirep_text: str,
             valid_from=report_time, valid_to=None, raw=fv_match.group(0)
         ))
 
-    # Fallback: no /FV found — try bare 4-digit vis (METAR-style, e.g. "SKC 7000")
+    # Fallback: no /FV — try VIS/VISIBILITY patterns (same as warning parser)
+    has_vis = any(el.type == 'visibility' for el in elements)
+    if not has_vis and not fv_match:
+        vis_patterns_fallback = [
+            r'VIS(?:IBILITY)?\s+(?:BELOW\s+|<\s*|OF\s+)?(\d+)\s*(?:M(?:ETERS?)?|OR\s+LESS)',
+            r'VIS(?:IBILITY)?\s+(?:BELOW\s+|<\s*|OF\s+)?(\d+(?:\.\d+)?)\s*KM',
+            r'VIS(?:IBILITY)?\s+(\d+)\b',
+            r'(\d+)\s*(?:M\b|METERS?)\s+(?:OR\s+LESS|VISIBILITY)',
+        ]
+        for vp in vis_patterns_fallback:
+            vm = re.search(vp, upper)
+            if vm:
+                val = float(vm.group(1))
+                if 'KM' in vm.group(0):
+                    val *= 1000
+                elif val < 100:
+                    val *= 1000
+                elements.append(WeatherElement(
+                    type='visibility', value={'meters': int(val)}, source='PIREP',
+                    valid_from=report_time, valid_to=None, raw=vm.group(0)
+                ))
+                break
+
+    # Fallback: no /FV and no VIS — try bare 4-digit vis (METAR-style, e.g. "SKC 7000")
     has_vis = any(el.type == 'visibility' for el in elements)
     if not has_vis and not fv_match:
         bare = re.search(r'(?<!\d)(\d{4})(?!\d)', upper)
